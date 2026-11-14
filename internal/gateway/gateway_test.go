@@ -379,3 +379,22 @@ func TestCopilotNoticeIsStripped(t *testing.T) {
 		t.Errorf("got %q, %v", ans.Text, err)
 	}
 }
+
+// A model that runs into the provider's timeout rests, so the next ask goes straight to one that works.
+func TestTimedOutModelRests(t *testing.T) {
+	g := build(t, `{"providers":[{"id":"c","tier":"B","kind":"cli","bin":"sh","timeout_seconds":1,
+		"models":["hang","ok"],"model_args":["{model}"],
+		"ask_args":["-c","if [ \"$0\" = hang ]; then sleep 30; fi; echo answer # {prompt}"]}]}`)
+	ctx := context.Background()
+	start := time.Now()
+	ans, err := g.Ask(ctx, "c", "", "hi", "")
+	if err != nil || ans.Used != "c/ok" {
+		t.Fatalf("first ask: %+v, %v", ans, err)
+	}
+	if why := g.ledger.ModelBlocked("c", "hang", time.Now()); !strings.Contains(why, "timed out") {
+		t.Errorf("the model that timed out is not resting: %q", why)
+	}
+	if d := time.Since(start); d > 8*time.Second {
+		t.Errorf("took %s", d)
+	}
+}

@@ -24,6 +24,7 @@ const (
 
 	keyedModelRest = 7 * 24 * time.Hour // a model that asked for an API key is left out this long
 	busyModelRest  = 2 * time.Minute    // a model that said it was busy
+	slowModelRest  = 30 * time.Minute   // a model that ran into the provider's timeout
 )
 
 type Gateway struct {
@@ -143,6 +144,8 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 				}
 			case busy:
 				g.ledger.BlockModel(id, m, g.now().Add(busyModelRest), "busy", g.now())
+			case slow: // do not sit through the same timeout on the next ask
+				g.ledger.BlockModel(id, m, g.now().Add(slowModelRest), "timed out", g.now())
 			}
 			if tried++; rested {
 				break
@@ -314,6 +317,7 @@ const (
 	needsKey
 	quota
 	busy
+	slow
 )
 
 var (
@@ -333,6 +337,8 @@ func classify(err error) failure {
 		return quota
 	case busyRe.MatchString(msg):
 		return busy
+	case strings.Contains(msg, "timed out after"):
+		return slow
 	}
 	return other
 }

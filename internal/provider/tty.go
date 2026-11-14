@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -130,6 +131,7 @@ func (p *tty) Session(ctx context.Context, r Request) (TTYResult, error) {
 			args = append(args, strings.ReplaceAll(a, "{model}", r.Model))
 		}
 	}
+	started := time.Now()
 	cmd := exec.Command(path, args...)
 	cmd.Dir = scratch
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
@@ -209,6 +211,12 @@ func (p *tty) Session(ctx context.Context, r Request) (TTYResult, error) {
 	res := TTYResult{Screen: text}
 	if err != nil && !errors.Is(err, errExited) {
 		return res, fmt.Errorf("reply did not finish: %w", err)
+	}
+	// The app's own saved conversation is the better source: it has the whole reply however long,
+	// and does not depend on the screen layout. The screen is the fallback.
+	if reply := p.fromTranscript(ctx, scratch, prompt, started); reply != "" {
+		res.Reply = reply
+		return res, nil
 	}
 	var found bool
 	res.Reply, found = p.extract(text, prompt)
@@ -299,6 +307,88 @@ func (p *tty) extract(text, prompt string) (string, bool) {
 		}
 	}
 	return strings.TrimSpace(strings.Join(out, "\n")), found
+}
+
+// fromTranscript reads the reply from the conversation file the app saved for this session, in the
+// format freebuff and codebuff write (chat-messages.json): a list of messages, where the reply is
+// the text blocks of the "ai" messages after our "user" message. It waits a few seconds for the
+// file to show a finished reply, and returns "" when there is none.
+func (p *tty) fromTranscript(ctx context.Context, scratch, prompt string, started time.Time) string {
+	if p.cfg.Transcript == "" {
+		return ""
+	}
+	pattern := strings.ReplaceAll(p.cfg.Transcript, "{scratch_base}", filepath.Base(scratch))
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(pattern, "~/") {
+		pattern = filepath.Join(home, pattern[2:])
+	}
+	want := strings.Join(strings.Fields(prompt), " ")
+	for deadline := time.Now().Add(4 * time.Second); ; {
+		files, _ := filepath.Glob(pattern)
+		for _, file := range files {
+			st, err := os.Stat(file)
+			if err != nil || st.ModTime().Before(started.Add(-2*time.Second)) {
+				continue // an older session's conversation
+			}
+			b, err := os.ReadFile(file)
+			if err != nil {
+				continue
+			}
+			if reply, ok := transcriptReply(b, want); ok {
+				if !p.cfg.TranscriptKeep {
+					os.RemoveAll(filepath.Dir(file))
+				}
+				return reply
+			}
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return ""
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// transcriptReply returns the finished reply to the user message equal to want (whitespace collapsed).
+func transcriptReply(data []byte, want string) (string, bool) {
+	var msgs []struct {
+		Variant    string `json:"variant"`
+		Content    string `json:"content"`
+		IsComplete bool   `json:"isComplete"`
+		Blocks     []struct {
+			Type     string `json:"type"`
+			Content  string `json:"content"`
+			TextType string `json:"textType"`
+		} `json:"blocks"`
+	}
+	if json.Unmarshal(data, &msgs) != nil {
+		return "", false
+	}
+	at := -1
+	for i, m := range msgs {
+		if m.Variant == "user" && strings.Join(strings.Fields(m.Content), " ") == want {
+			at = i
+		}
+	}
+	if at < 0 {
+		return "", false
+	}
+	var parts []string
+	complete := false
+	for _, m := range msgs[at+1:] {
+		if m.Variant != "ai" {
+			continue
+		}
+		complete = m.IsComplete
+		if strings.TrimSpace(m.Content) != "" {
+			parts = append(parts, strings.TrimSpace(m.Content))
+		}
+		for _, b := range m.Blocks {
+			if b.Type == "text" && (b.TextType == "" || b.TextType == "text") && strings.TrimSpace(b.Content) != "" {
+				parts = append(parts, strings.TrimSpace(b.Content))
+			}
+		}
+	}
+	reply := strings.Join(parts, "\n\n")
+	return reply, complete && reply != ""
 }
 
 // answerQueries replies to the terminal queries a full-screen app sends at startup (cursor position,

@@ -141,3 +141,44 @@ func providersJSON(t *testing.T) []byte {
 	}
 	return b
 }
+
+// With a transcript configured, the reply comes from the app's saved conversation (whole, however
+// long), not from the screen, and the saved conversation is removed afterwards.
+func TestTTYReadsTranscript(t *testing.T) {
+	dir := t.TempDir()
+	app := `
+printf 'App\r\n> '
+read line
+mkdir -p "$CHATS/one"
+printf '[{"variant":"ai","blocks":[{"type":"mode-divider"}]},{"variant":"user","content":"%s"},{"variant":"ai","content":"","blocks":[{"type":"text","content":"thinking aloud","textType":"reasoning"},{"type":"text","content":"The whole reply.","textType":"text"},{"type":"tool","content":"ignored"}],"isComplete":true}]' "$line" > "$CHATS/one/chat-messages.json"
+printf 'only part of the reply fits here\r\n'
+sleep 30
+`
+	ps, err := Parse([]byte(`{"providers":[{"id":"fake","tier":"B","kind":"tty","bin":"sh","args":["-c",` + jsonString(app) + `],
+		"env":{"CHATS":"` + dir + `"},"transcript":"` + dir + `/*/chat-messages.json",
+		"no_paste":true,"ready_idle_seconds":0.4,"done_idle_seconds":0.8,"min_reply_seconds":0.1,"rows":24,"cols":80}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	res, err := ps[0].(*tty).Session(ctx, Request{Messages: []Message{{Role: "user", Content: "what is  it"}}})
+	if err != nil || res.Reply != "The whole reply." {
+		t.Errorf("reply %q, %v\nscreen:\n%s", res.Reply, err, res.Screen)
+	}
+	if _, err := os.Stat(dir + "/one"); !os.IsNotExist(err) {
+		t.Errorf("saved conversation was not removed: %v", err)
+	}
+
+	// The real file from betelgeuse, and an unfinished one.
+	real := `[{"id":"divider-1","variant":"ai","content":"","blocks":[{"type":"mode-divider","mode":"LITE"}],"timestamp":"12:11 PM"},{"id":"user-1","variant":"user","content":"Reply with exactly one word: PONG","timestamp":"12:11 PM"},{"id":"ai-1","variant":"ai","content":"","blocks":[{"type":"text","content":"PONG","textType":"text"}],"timestamp":"12:11 PM","metadata":{"allowInlineAds":true},"isComplete":true,"completionTime":"4s","credits":0}]`
+	if r, ok := transcriptReply([]byte(real), "Reply with exactly one word: PONG"); !ok || r != "PONG" {
+		t.Errorf("real transcript: %q %v", r, ok)
+	}
+	if _, ok := transcriptReply([]byte(strings.Replace(real, `"isComplete":true`, `"isComplete":false`, 1)), "Reply with exactly one word: PONG"); ok {
+		t.Error("an unfinished reply was accepted")
+	}
+	if _, ok := transcriptReply([]byte(real), "another prompt"); ok {
+		t.Error("another session's conversation was accepted")
+	}
+}

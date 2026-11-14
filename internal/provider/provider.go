@@ -68,6 +68,8 @@ type Config struct {
 	NoPaste            bool     `json:"no_paste,omitempty"`           // type the prompt as plain keys on one line, not as a bracketed paste
 	Submit             string   `json:"submit,omitempty"`             // keys that send the prompt (default Enter)
 	Quit               string   `json:"quit,omitempty"`               // keys that close the app (default Ctrl-C twice)
+	Transcript         string   `json:"transcript,omitempty"`         // glob of the app's saved-conversation files; ~ and {scratch_base} expand. When set, the reply is read from there and the screen is the fallback
+	TranscriptKeep     bool     `json:"transcript_keep,omitempty"`    // leave the saved conversation on disk (default: delete it after reading)
 	Cols               int      `json:"cols,omitempty"`
 	Rows               int      `json:"rows,omitempty"`
 	Disabled           bool     `json:"disabled,omitempty"` // listed in the file but not served

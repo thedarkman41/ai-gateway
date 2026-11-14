@@ -52,9 +52,9 @@ gateway calls an HTTP endpoint, runs a CLI with a prompt flag, or types into a t
 |---|---|---|
 | `openai` | OpenAI-compatible endpoints | JSON response |
 | `cli` | CLIs with a prompt flag (`gemini -p`, `opencode run`) | the command's output |
-| `tty` | interactive terminal apps with no prompt flag (freebuff) | read off the rendered screen |
+| `tty` | interactive terminal apps with no prompt flag (freebuff) | the app's saved conversation file, else the rendered screen |
 
-A `tty` provider is the most fragile: a UI change can break which screen lines count as the reply. Tune an entry with:
+A `tty` provider is the most fragile: the screen tells the gateway when a reply is finished, so a UI change can break that. Tune an entry with:
 
 ```bash
 ai-gateway try freebuff      # prints the final screen, then the reply extracted from it

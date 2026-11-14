@@ -118,10 +118,11 @@ func (p *tty) Session(ctx context.Context, r Request) (TTYResult, error) {
 	if err != nil {
 		return TTYResult{}, p.Available()
 	}
-	scratch := filepath.Join(os.TempDir(), "ai-gateway-scratch")
-	if err := os.MkdirAll(scratch, 0o700); err != nil {
+	scratch, cleanup, err := newScratch(p.cfg)
+	if err != nil {
 		return TTYResult{}, err
 	}
+	defer cleanup() // runs after the app has been closed, below
 	var args []string
 	for _, a := range p.cfg.Args {
 		args = append(args, strings.ReplaceAll(a, "{scratch}", scratch))
@@ -185,7 +186,7 @@ func (p *tty) Session(ctx context.Context, r Request) (TTYResult, error) {
 	}
 
 	// 2. Type the prompt. Bracketed paste keeps a multi-line prompt from being submitted line by line.
-	prompt := Flatten(r.Messages)
+	prompt := p.cfg.withPreamble(Flatten(r.Messages))
 	if p.cfg.NoPaste {
 		f.Write([]byte(strings.Join(strings.Fields(prompt), " ")))
 	} else {
@@ -317,10 +318,7 @@ func (p *tty) fromTranscript(ctx context.Context, scratch, prompt string, starte
 	if p.cfg.Transcript == "" {
 		return ""
 	}
-	pattern := strings.ReplaceAll(p.cfg.Transcript, "{scratch_base}", filepath.Base(scratch))
-	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(pattern, "~/") {
-		pattern = filepath.Join(home, pattern[2:])
-	}
+	pattern := expandHome(strings.ReplaceAll(p.cfg.Transcript, "{scratch_base}", filepath.Base(scratch)))
 	want := strings.Join(strings.Fields(prompt), " ")
 	for deadline := time.Now().Add(4 * time.Second); ; {
 		files, _ := filepath.Glob(pattern)

@@ -136,7 +136,7 @@ func TestAskRoutingAndFallback(t *testing.T) {
 
 	// A CLI runs in the scratch directory with the entry's env, not in the caller's directory.
 	ans, err = g.Ask(ctx, "sh", "", "x", "")
-	if err != nil || !strings.HasSuffix(ans.Text, "ai-gateway-scratch trusted") {
+	if err != nil || !strings.Contains(ans.Text, "/ai-gateway-runs/aigw-") || !strings.HasSuffix(ans.Text, " trusted") {
 		t.Errorf("cli cwd and env: %+v, %v", ans, err)
 	}
 
@@ -494,5 +494,51 @@ func TestCLIRunsOneAtATime(t *testing.T) {
 	}
 	if strings.Contains(all, "OVERLAP") || strings.Count(all, "fine") != 3 {
 		t.Errorf("runs overlapped or went missing:\n%s", all)
+	}
+}
+
+// What the first real fan-out on betelgeuse showed: coding-agent CLIs write files into the directory
+// they run in, and the next one read them as "the project". Each run now gets its own empty
+// directory, deleted afterwards along with what the entry's cleanup names, and a standing
+// instruction to answer in the reply.
+func TestEachCLIRunIsIsolated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	g := build(t, `{"preamble":"Answer in the reply.","providers":[
+		{"id":"c","tier":"B","kind":"cli","bin":"sh","cleanup":["~/tool-state/{scratch_base}"],
+		 "ask_args":["-c","ls | wc -l | tr -d ' '; pwd; touch leftover.py; mkdir -p $HOME/tool-state/$(basename $(pwd)); echo \"$0\"","{prompt}"]},
+		{"id":"plain","tier":"B","kind":"cli","bin":"echo","ask_args":["{prompt}"],"preamble":""}]}`)
+	ctx := context.Background()
+	var dirs []string
+	for i := 0; i < 2; i++ {
+		ans, err := g.Ask(ctx, "c", "", "do it", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(ans.Text, "\n")
+		if lines[0] != "0" {
+			t.Errorf("run %d did not start in an empty directory: %q", i, ans.Text)
+		}
+		if !strings.Contains(ans.Text, "Answer in the reply.\n\ndo it") {
+			t.Errorf("preamble missing: %q", ans.Text)
+		}
+		dirs = append(dirs, lines[1])
+	}
+	if dirs[0] == dirs[1] {
+		t.Error("two runs shared a directory")
+	}
+	for _, d := range dirs {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Errorf("scratch directory %s was not removed", d)
+		}
+	}
+	if left, _ := os.ReadDir(filepath.Join(home, "tool-state")); len(left) != 0 {
+		t.Errorf("the tool's own per-run state was not cleaned up: %v", left)
+	}
+	if ans, _ := g.Ask(ctx, "plain", "", "just this", ""); ans.Text != "just this" {
+		t.Errorf("an entry with an empty preamble still got one: %q", ans.Text)
+	}
+	if _, err := provider.Parse([]byte(`{"providers":[{"id":"x","kind":"cli","bin":"sh","ask_args":["{prompt}"],"cleanup":["~/everything"]}]}`)); err == nil {
+		t.Error("a cleanup glob without {scratch_base} was accepted")
 	}
 }

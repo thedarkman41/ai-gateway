@@ -54,8 +54,10 @@ type Config struct {
 	Bin          string            `json:"bin,omitempty"`
 	AskArgs      []string          `json:"ask_args,omitempty"`
 	ModelArgs    []string          `json:"model_args,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`   // extra environment for a CLI
-	Strip        []string          `json:"strip,omitempty"` // regexes removed from a CLI's output, for a notice the CLI prints around its answer
+	Env          map[string]string `json:"env,omitempty"`      // extra environment for a CLI
+	Strip        []string          `json:"strip,omitempty"`    // regexes removed from a CLI's output, for a notice the CLI prints around its answer
+	Preamble     *string           `json:"preamble,omitempty"` // put before every prompt to a cli or tty entry; unset = the file's top-level preamble
+	Cleanup      []string          `json:"cleanup,omitempty"`  // globs the tool leaves behind per run, removed afterwards; ~ and {scratch_base} expand, and each must contain {scratch_base}
 
 	// kind tty: an interactive terminal app driven through a pseudo-terminal.
 	Args               []string `json:"args,omitempty"`               // launch arguments; {scratch} is the scratch directory
@@ -94,10 +96,21 @@ func ParseAll(data []byte) ([]Provider, error) { return parse(data, true) }
 
 func parse(data []byte, all bool) ([]Provider, error) {
 	var f struct {
+		Preamble  string   `json:"preamble"`
 		Providers []Config `json:"providers"`
 	}
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, err
+	}
+	for i, c := range f.Providers {
+		if c.Preamble == nil && c.Kind != "openai" {
+			f.Providers[i].Preamble = &f.Preamble
+		}
+		for _, g := range c.Cleanup {
+			if !strings.Contains(g, "{scratch_base}") {
+				return nil, fmt.Errorf("%s: cleanup %q must contain {scratch_base}, so it can only remove this run's leftovers", c.ID, g)
+			}
+		}
 	}
 	var out []Provider
 	seen := map[string]bool{}
@@ -233,7 +246,7 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 	if err != nil {
 		return "", p.Available()
 	}
-	prompt := Flatten(r.Messages)
+	prompt := p.cfg.withPreamble(Flatten(r.Messages))
 	if len(prompt) > 200_000 {
 		return "", errors.New("prompt is too long to pass to a CLI (200,000 characters)")
 	}
@@ -250,12 +263,13 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr // stdin stays closed: never wait on a login prompt
-	// These CLIs are coding agents that read and may edit the directory they start in, so they run
-	// in an empty scratch directory, never in a project.
-	scratch := filepath.Join(os.TempDir(), "ai-gateway-scratch")
-	if err := os.MkdirAll(scratch, 0o700); err != nil {
+	// These CLIs are coding agents that read and may edit the directory they start in, so each run
+	// gets its own empty scratch directory, never a project, and it is deleted afterwards.
+	scratch, cleanup, err := newScratch(p.cfg)
+	if err != nil {
 		return "", err
 	}
+	defer cleanup()
 	cmd.Dir = scratch
 	cmd.Env = os.Environ()
 	for k, v := range p.cfg.Env {
@@ -279,6 +293,49 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 		return "", fmt.Errorf("empty output: %s", Short(stderr.String()))
 	}
 	return text, nil
+}
+
+// newScratch makes a fresh empty directory for one run of a coding-agent CLI and returns a function
+// that deletes it, along with whatever the entry's cleanup globs name for this run.
+//
+// The directory is new every time because these tools write files there even when asked a plain
+// question, and the next tool to run in a shared directory reads them as "the project": answers
+// then leak from one task into another.
+func newScratch(c Config) (dir string, cleanup func(), err error) {
+	base := filepath.Join(os.TempDir(), "ai-gateway-runs")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", nil, err
+	}
+	if dir, err = os.MkdirTemp(base, "aigw-"); err != nil {
+		return "", nil, err
+	}
+	name := filepath.Base(dir)
+	return dir, func() {
+		os.RemoveAll(dir)
+		for _, g := range c.Cleanup {
+			matches, _ := filepath.Glob(expandHome(strings.ReplaceAll(g, "{scratch_base}", name)))
+			for _, m := range matches {
+				if strings.Contains(m, name) { // never anything but this run's leftovers
+					os.RemoveAll(m)
+				}
+			}
+		}
+	}, nil
+}
+
+func expandHome(path string) string {
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
+// withPreamble puts the entry's standing instruction before a prompt.
+func (c Config) withPreamble(prompt string) string {
+	if c.Preamble == nil || strings.TrimSpace(*c.Preamble) == "" {
+		return prompt
+	}
+	return strings.TrimSpace(*c.Preamble) + "\n\n" + prompt
 }
 
 var reportRe = regexp.MustCompile(`Full report available at: (\S+\.json)`)

@@ -109,7 +109,7 @@ HTTP service (`serve -http`) avoids that.
 - **Learns from failures.** A model that asks for an API key is left out for a week. A busy model rests two minutes; one that times out rests thirty. A model whose free allowance is spent rests until midnight, and two such models in one ask rest the whole provider until midnight. `ai-gateway models` shows what is resting and why.
 - **Breaker.** Three failed asks in a row rest a provider for 10 minutes.
 - **Spacing and quota.** `min_interval_seconds` spaces calls out; `daily_limit` caps them. Both live in `~/.ai-gateway/ledger.json`, so they survive restarts.
-- **CLIs are sandboxed to a scratch directory.** The vendor CLIs are coding agents, so they start in an empty temp directory, never in a project.
+- **Each CLI run is isolated.** The vendor CLIs are coding agents: they write files where they run and read whatever is there as "the project". So every run gets its own empty temp directory, deleted afterwards along with the per-run state the tool keeps elsewhere, and a standing instruction (the `preamble` in `providers.json`) to answer in the reply instead of creating files.
 - **Fix without rebuilding.** Copy `providers/providers.json` to `~/.ai-gateway/providers.json` and edit it; that copy replaces the built-in list.
 
 ## Connecting Bill the Cat

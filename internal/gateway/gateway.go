@@ -144,7 +144,7 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 			case quota:
 				g.ledger.BlockModel(id, m, nextMidnight(g.now()), "free allowance used up", g.now())
 				if quotaHits++; quotaHits >= 2 { // the allowance is the account's, not the model's
-					g.ledger.Rest(id, nextMidnight(g.now()), "free allowance used up", g.now())
+					g.ledger.Rest(id, nextMidnight(g.now()), "free allowance used up ("+provider.Short(err.Error())+")", g.now())
 					rested = true
 				}
 			case busy:

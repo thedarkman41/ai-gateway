@@ -29,6 +29,7 @@ const usage = `usage: gateway <command> [flags]
   serve    run the MCP server on stdio, or on HTTP with -http 127.0.0.1:8765
   check    send a test prompt through every configured provider
   models   print the providers, their state and their models
+  reset    reset [provider]: clear the rests on one provider, or on all of them
   fanout   fanout [-all] <prompt>...: run the dispatch/collect loop from the terminal. Each prompt is
            a task spread over the free providers; -all sends one prompt to every free provider
   try      try <provider> [prompt]: one ask straight to a provider, disabled ones included;
@@ -90,6 +91,13 @@ func main() {
 		fmt.Print(g.Status(ctx))
 	case "try":
 		runTry(ctx, os.Args[2:])
+	case "reset":
+		fs := flag.NewFlagSet("reset", flag.ExitOnError)
+		g := open(fs, os.Args[2:])
+		if err := g.Reset(fs.Arg(0)); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Print(g.Status(ctx))
 	case "fanout":
 		runFanout(ctx, os.Args[2:])
 	case "probe":

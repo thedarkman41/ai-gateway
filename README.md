@@ -106,7 +106,7 @@ HTTP service (`serve -http`) avoids that.
 
 - **Fallback.** `auto` walks the providers in file order and skips any that is not installed, resting or over quota.
 - **Model retry.** When no model is named, the model that answered last time is tried first, then the provider's listed models, three attempts in all.
-- **Learns from failures.** A model that asks for an API key is left out for a week. A busy model rests two minutes; one that times out rests thirty. A model whose free allowance is spent rests until midnight, and two such models in one ask rest the whole provider until midnight. `ai-gateway models` shows what is resting and why.
+- **Learns from failures.** A model that asks for an API key is left out for a week. A busy model rests two minutes; one that times out rests thirty. A model whose free allowance is spent rests until midnight, and two such models in one ask rest the whole provider until midnight. A rate limit counts as busy, not as a spent allowance. `ai-gateway models` shows what is resting and why; `ai-gateway reset [provider]` clears a rest.
 - **Breaker.** Three failed asks in a row rest a provider for 10 minutes.
 - **Spacing and quota.** `min_interval_seconds` spaces calls out; `daily_limit` caps them. Both live in `~/.ai-gateway/ledger.json`, so they survive restarts.
 - **Each CLI run is isolated.** The vendor CLIs are coding agents: they write files where they run and read whatever is there as "the project". So every run gets its own empty temp directory, deleted afterwards along with the per-run state the tool keeps elsewhere, and a standing instruction (the `preamble` in `providers.json`) to answer in the reply instead of creating files.

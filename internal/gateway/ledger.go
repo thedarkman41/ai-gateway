@@ -133,6 +133,15 @@ func (l *Ledger) Rest(id string, until time.Time, why string, now time.Time) {
 	l.save()
 }
 
+// Reset clears a provider's rests and failure count. Today's call count is kept.
+func (l *Ledger) Reset(id string, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e := l.entry(id, now)
+	e.Fails, e.DownUntil, e.RestWhy, e.LastError, e.Models = 0, time.Time{}, "", "", nil
+	l.save()
+}
+
 // BlockModel takes one model of a provider out of use until a time.
 func (l *Ledger) BlockModel(id, model string, until time.Time, why string, now time.Time) {
 	l.mu.Lock()

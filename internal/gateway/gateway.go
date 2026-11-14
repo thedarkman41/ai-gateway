@@ -338,8 +338,24 @@ const (
 var (
 	keyRe   = regexp.MustCompile(`(?i)api key|HTTP 401|HTTP 403|unauthorized|authentication`)
 	quotaRe = regexp.MustCompile(`(?i)quota|usage limit|limit reached|exhausted|out of credits`)
+	rateRe  = regexp.MustCompile(`(?i)HTTP 429|rate.?limit|too many requests|per (second|minute|hour)|try again (in|shortly|later)`)
+	dailyRe = regexp.MustCompile(`(?i)daily|per day|today|monthly|per month|free usage limit|out of credits`)
 	busyRe  = regexp.MustCompile(`(?i)HTTP 429|HTTP 503|temporarily|busy|overloaded|rate.?limit`)
 )
+
+// Reset clears the rests on one provider, or on all of them when id is empty: for a rest the gateway
+// got wrong, or an allowance the user knows has come back.
+func (g *Gateway) Reset(id string) error {
+	if id != "" && g.byID[id] == nil {
+		return fmt.Errorf("unknown provider %q; one of: %s", id, strings.Join(g.ids(), ", "))
+	}
+	for _, p := range g.providers {
+		if id == "" || p.Config().ID == id {
+			g.ledger.Reset(p.Config().ID, g.now())
+		}
+	}
+	return nil
+}
 
 // classify sorts a provider's error by what should be done about it. It reads the error text, since
 // a CLI reports these conditions only in words.
@@ -348,6 +364,8 @@ func classify(err error) failure {
 	switch {
 	case keyRe.MatchString(msg):
 		return needsKey
+	case rateRe.MatchString(msg) && !dailyRe.MatchString(msg):
+		return busy // a short-term rate limit, even when it is worded as a limit or quota
 	case quotaRe.MatchString(msg):
 		return quota
 	case busyRe.MatchString(msg):

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -540,5 +541,41 @@ func TestEachCLIRunIsIsolated(t *testing.T) {
 	}
 	if _, err := provider.Parse([]byte(`{"providers":[{"id":"x","kind":"cli","bin":"sh","ask_args":["{prompt}"],"cleanup":["~/everything"]}]}`)); err == nil {
 		t.Error("a cleanup glob without {scratch_base} was accepted")
+	}
+}
+
+// A rate limit is a short rest, not a spent daily allowance, however it is worded. (Pollinations was
+// rested until midnight on betelgeuse and answered again minutes later.)
+func TestRateLimitIsNotADailyQuota(t *testing.T) {
+	for msg, want := range map[string]failure{
+		"HTTP 429: Rate limit exceeded. Quota: 1 request per 15 seconds":               busy,
+		"HTTP 429: Too many requests, limit reached":                                   busy,
+		"HTTP 429: You have exceeded your daily quota":                                 quota,
+		"exit status 1: You have exhausted your daily quota on this model.":            quota,
+		"exit status 1: Error: Free usage limit reached. Free models work in OpenCode": quota,
+		"empty output: Error: Out of Credits Add credits to keep using Amp.":           quota,
+		"HTTP 503: This model is temporarily busy. Please try again shortly":           busy,
+		"HTTP 401: Missing API key.":                                                   needsKey,
+		"timed out after 3m0s":                                                         slow,
+		"HTTP 500: boom":                                                               other,
+	} {
+		if got := classify(errors.New(msg)); got != want {
+			t.Errorf("%q classified as %d, want %d", msg, got, want)
+		}
+	}
+
+	// reset clears a rest.
+	f := &fake{}
+	srv := f.server(t)
+	g := build(t, fmt.Sprintf(`{"providers":[{"id":"q","tier":"A","kind":"openai","url":"%s/chat","models":["spent1","spent2"]}]}`, srv.URL))
+	g.Ask(context.Background(), "q", "", "hi", "")
+	if len(g.Free()) != 0 {
+		t.Fatal("provider not resting")
+	}
+	if err := g.Reset("q"); err != nil || len(g.Free()) != 1 {
+		t.Errorf("after reset: %v, free %v", err, g.Free())
+	}
+	if g.Reset("nope") == nil {
+		t.Error("reset of an unknown provider accepted")
 	}
 }

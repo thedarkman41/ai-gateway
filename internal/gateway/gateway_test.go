@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -40,6 +41,17 @@ func (f *fake) server(t *testing.T) *httptest.Server {
 		f.mu.Unlock()
 		if down {
 			http.Error(w, "upstream broke", 502)
+			return
+		}
+		switch m, _ := body["model"].(string); {
+		case strings.HasPrefix(m, "keyed"):
+			http.Error(w, `{"error":{"message":"Missing API key.","code":"missing_api_key"}}`, 401)
+			return
+		case strings.HasPrefix(m, "spent"):
+			http.Error(w, `Error: Free usage limit reached.`, 400)
+			return
+		case strings.HasPrefix(m, "busy"):
+			http.Error(w, `{"error":{"message":"This model is temporarily busy."}}`, 503)
 			return
 		}
 		if body["model"] == "dead" {
@@ -287,5 +299,58 @@ func TestMCPEndToEnd(t *testing.T) {
 	}
 	if resp, _ := post(`{"jsonrpc":"2.0","id":1,"method":"ping"}`, "https://evil.example"); resp.StatusCode != 403 {
 		t.Errorf("foreign origin: %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestLearnsFromFailures covers what the first real checks ran into: models that need a key, a model
+// that is busy, and a spent free allowance.
+func TestLearnsFromFailures(t *testing.T) {
+	f := &fake{}
+	srv := f.server(t)
+	g := build(t, fmt.Sprintf(`{"providers":[
+		{"id":"k","tier":"A","kind":"openai","url":"%[1]s/chat","models":["keyed1","keyed2","keyed3","keyed4","busy1","live"]},
+		{"id":"q","tier":"B","kind":"openai","url":"%[1]s/chat","models":["spent1","spent2","live"]}]}`, srv.URL))
+	clock := time.Date(2026, 11, 14, 22, 0, 0, 0, time.Local)
+	g.now = func() time.Time { return clock }
+	ctx := context.Background()
+
+	// Keyed models are passed over without using up the three real tries; the busy one is one try.
+	ans, err := g.Ask(ctx, "k", "", "hi", "")
+	if err != nil || ans.Used != "k/live" || f.count() != 6 {
+		t.Fatalf("keyed and busy: %+v, %v, %d calls want 6", ans, err, f.count())
+	}
+	// Next time only the model that worked is called, and a pinned keyed model is refused unsent.
+	if _, err := g.Ask(ctx, "k", "", "hi", ""); err != nil || f.count() != 7 {
+		t.Errorf("second ask: %v, %d calls want 7", err, f.count())
+	}
+	if _, err := g.Ask(ctx, "k/keyed2", "", "hi", ""); err == nil || !strings.Contains(err.Error(), "needs an API key") || f.count() != 7 {
+		t.Errorf("pinned keyed model: %v, %d calls want 7", err, f.count())
+	}
+	if st := g.Status(ctx); !strings.Contains(st, "needs an API key: keyed1, keyed2, keyed3, keyed4") || !strings.Contains(st, "busy: busy1") {
+		t.Errorf("status:\n%s", st)
+	}
+
+	// Two models reporting a spent allowance rest the whole provider until midnight.
+	if _, err := g.Ask(ctx, "q", "", "hi", ""); err == nil || f.count() != 9 {
+		t.Fatalf("quota: %v, %d calls want 9", err, f.count())
+	}
+	if _, err := g.Ask(ctx, "q", "", "hi", ""); err == nil || !strings.Contains(err.Error(), "resting until Nov 15 00:00: free allowance used up") || f.count() != 9 {
+		t.Errorf("resting provider: %v, %d calls want 9", err, f.count())
+	}
+	clock = clock.Add(3 * time.Hour) // past midnight
+	if ans, err := g.Ask(ctx, "q", "", "hi", ""); err == nil || f.count() != 11 {
+		t.Errorf("after midnight the provider is tried again: %+v, %v, %d calls want 11", ans, err, f.count())
+	}
+}
+
+// A CLI that hides its cause in a report file (Gemini CLI) still gets classified as a spent quota.
+func TestCLIReportFile(t *testing.T) {
+	report := filepath.Join(t.TempDir(), "gemini-client-error-test.json")
+	os.WriteFile(report, []byte(`{"error":{"message":"You have exhausted your daily quota on this model."}}`), 0o644)
+	g := build(t, fmt.Sprintf(`{"providers":[{"id":"c","tier":"B","kind":"cli","bin":"sh",
+		"ask_args":["-c","echo 'Error generating content via API. Full report available at: %s' >&2; exit 1 # {prompt}"]}]}`, report))
+	_, err := g.Ask(context.Background(), "c", "", "hi", "")
+	if err == nil || !strings.Contains(err.Error(), "exhausted your daily quota") || classify(err) != quota {
+		t.Errorf("report file: %v", err)
 	}
 }

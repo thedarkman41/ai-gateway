@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,10 @@ const (
 	maxSessions      = 50
 	maxSessionTurns  = 40 // messages kept per session
 	modelsTriedUnpin = 3  // models tried per provider when the caller did not name one
+	modelAttemptsMax = 8  // the same, counting models skipped at once for needing an API key
+
+	keyedModelRest = 7 * 24 * time.Hour // a model that asked for an API key is left out this long
+	busyModelRest  = 2 * time.Minute    // a model that said it was busy
 )
 
 type Gateway struct {
@@ -96,28 +101,59 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 			if last := g.ledger.Snapshot(id, g.now()).LastModel; last != "" && slices.Contains(models, last) {
 				models = append([]string{last}, slices.DeleteFunc(slices.Clone(models), func(m string) bool { return m == last })...)
 			}
-			if len(models) > modelsTriedUnpin {
-				models = models[:modelsTriedUnpin]
-			}
 			if len(models) == 0 {
 				models = []string{""}
 			}
 		}
 		var lastErr error
+		tried, attempts, quotaHits, rested := 0, 0, 0, false
 		for _, m := range models {
+			name := strings.TrimSuffix(id+"/"+m, "/")
+			if why := g.ledger.ModelBlocked(id, m, g.now()); why != "" {
+				if pinned != "" {
+					notes = append(notes, name+": "+why)
+				}
+				continue
+			}
+			if tried >= modelsTriedUnpin || attempts >= modelAttemptsMax {
+				break
+			}
+			attempts++
 			text, err := g.call(ctx, p, provider.Request{Model: m, Messages: msgs})
 			if err == nil {
 				g.ledger.Result(id, m, nil, g.now())
 				g.remember(session, prompt, text)
-				return Answer{Text: text, Used: strings.TrimSuffix(id+"/"+m, "/")}, nil
+				return Answer{Text: text, Used: name}, nil
 			}
 			lastErr = err
-			notes = append(notes, fmt.Sprintf("%s: %v", strings.TrimSuffix(id+"/"+m, "/"), err))
+			notes = append(notes, fmt.Sprintf("%s: %v", name, err))
 			if ctx.Err() != nil {
 				break
 			}
+			// Learn from the failure, so the next ask does not repeat it.
+			switch classify(err) {
+			case needsKey: // not a keyless model: leave it out, and do not count it as a real try
+				g.ledger.BlockModel(id, m, g.now().Add(keyedModelRest), "needs an API key", g.now())
+				continue
+			case quota:
+				g.ledger.BlockModel(id, m, nextMidnight(g.now()), "free allowance used up", g.now())
+				if quotaHits++; quotaHits >= 2 { // the allowance is the account's, not the model's
+					g.ledger.Rest(id, nextMidnight(g.now()), "free allowance used up", g.now())
+					rested = true
+				}
+			case busy:
+				g.ledger.BlockModel(id, m, g.now().Add(busyModelRest), "busy", g.now())
+			}
+			if tried++; rested {
+				break
+			}
 		}
-		g.ledger.Result(id, "", lastErr, g.now())
+		switch {
+		case lastErr == nil:
+			notes = append(notes, id+": every model is resting; see list_models")
+		case !rested:
+			g.ledger.Result(id, "", lastErr, g.now())
+		}
 		if ctx.Err() != nil {
 			break
 		}
@@ -222,6 +258,9 @@ func (g *Gateway) Status(ctx context.Context) string {
 			quota = fmt.Sprintf("%d of %d calls today", e.Calls, cfg.DailyLimit)
 		}
 		fmt.Fprintf(&b, "\n%s (tier %s): %s; %s\n", cfg.ID, cfg.Tier, state, quota)
+		if rest := g.ledger.RestingModels(cfg.ID, g.now()); len(rest) > 0 {
+			fmt.Fprintf(&b, "  resting models: %s\n", strings.Join(rest, "; "))
+		}
 		models := p.Models(ctx)
 		shown := models
 		if len(shown) > 20 {
@@ -266,4 +305,40 @@ func (g *Gateway) Check(ctx context.Context) []CheckResult {
 		out = append(out, r)
 	}
 	return out
+}
+
+type failure int
+
+const (
+	other failure = iota
+	needsKey
+	quota
+	busy
+)
+
+var (
+	keyRe   = regexp.MustCompile(`(?i)api key|HTTP 401|HTTP 403|unauthorized|authentication`)
+	quotaRe = regexp.MustCompile(`(?i)quota|usage limit|limit reached|exhausted`)
+	busyRe  = regexp.MustCompile(`(?i)HTTP 429|HTTP 503|temporarily|busy|overloaded|rate.?limit`)
+)
+
+// classify sorts a provider's error by what should be done about it. It reads the error text, since
+// a CLI reports these conditions only in words.
+func classify(err error) failure {
+	msg := err.Error()
+	switch {
+	case keyRe.MatchString(msg):
+		return needsKey
+	case quotaRe.MatchString(msg):
+		return quota
+	case busyRe.MatchString(msg):
+		return busy
+	}
+	return other
+}
+
+// nextMidnight is when daily free allowances are assumed to reset: local midnight.
+func nextMidnight(now time.Time) time.Time {
+	y, m, d := now.Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, now.Location())
 }

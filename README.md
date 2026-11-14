@@ -21,10 +21,10 @@ not written yet.
 
 | Provider | Tier | Route | On betelgeuse |
 |---|---|---|---|
-| gemini-cli | B | `gemini -p` | failing: past the trust gate, now "Error generating content via API"; cause not yet known |
+| gemini-cli | B | `gemini -p` | the adapter works; the default model's daily quota was spent, so it now falls through to the flash models |
 | pollinations | A | OpenAI-compatible endpoint | answered |
-| llm7 | A | OpenAI-compatible endpoint | answered (a DeepSeek model) |
-| opencode | B | `opencode run -m` | enabled with its free hosted models only; not yet checked |
+| llm7 | A | OpenAI-compatible endpoint | answered earlier; only some of its listed models are keyless, and the gateway learns which |
+| opencode | B | `opencode run -m` | the adapter works; the account's free allowance was spent when checked |
 | freebuff | B | terminal session (it has no prompt flag) | disabled until `ai-gateway try freebuff` shows a clean reply |
 
 ## Build and check
@@ -64,6 +64,7 @@ ai-gateway try freebuff      # prints the final screen, then the reply extracted
 
 - **Fallback.** `auto` walks the providers in file order and skips any that is not installed, resting or over quota.
 - **Model retry.** When no model is named, the model that answered last time is tried first, then the provider's listed models, three attempts in all.
+- **Learns from failures.** A model that asks for an API key is left out for a week. A busy model rests two minutes. A model whose free allowance is spent rests until midnight, and two such models in one ask rest the whole provider until midnight. `ai-gateway models` shows what is resting and why.
 - **Breaker.** Three failed asks in a row rest a provider for 10 minutes.
 - **Spacing and quota.** `min_interval_seconds` spaces calls out; `daily_limit` caps them. Both live in `~/.ai-gateway/ledger.json`, so they survive restarts.
 - **CLIs are sandboxed to a scratch directory.** The vendor CLIs are coding agents, so they start in an empty temp directory, never in a project.

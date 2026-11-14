@@ -249,12 +249,41 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 	runErr := cmd.Run()
 	text := strings.TrimSpace(ansi.ReplaceAllString(stdout.String(), ""))
 	if runErr != nil {
-		return "", fmt.Errorf("%s: %s", Short(runErr.Error()), Short(firstNonEmpty(strings.TrimSpace(stderr.String()), text)))
+		detail := firstNonEmpty(strings.TrimSpace(stderr.String()), text)
+		if why := reportedError(detail); why != "" { // the real cause, ahead of the CLI's generic line
+			detail = why + " | " + detail
+		}
+		return "", fmt.Errorf("%s: %s", Short(runErr.Error()), Short(detail))
 	}
 	if text == "" {
 		return "", fmt.Errorf("empty output: %s", Short(stderr.String()))
 	}
 	return text, nil
+}
+
+var reportRe = regexp.MustCompile(`Full report available at: (\S+\.json)`)
+
+// reportedError digs the cause out of an error report file. Gemini CLI prints only "Error generating
+// content via API" and writes the reason (a spent daily quota, say) to a JSON report in the temp
+// directory; without it the gateway cannot tell a quota from a fault.
+func reportedError(stderr string) string {
+	m := reportRe.FindStringSubmatch(stderr)
+	if m == nil || !strings.HasPrefix(filepath.Base(m[1]), "gemini-client-error-") {
+		return ""
+	}
+	f, err := os.Open(m[1])
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	b, _ := io.ReadAll(io.LimitReader(f, 1<<20))
+	var v struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	json.Unmarshal(b, &v)
+	return v.Error.Message
 }
 
 // Flatten renders a conversation as one prompt, for backends that take a single string.

@@ -56,6 +56,7 @@ type Config struct {
 	KeyOptional  bool              `json:"key_optional,omitempty"` // works without the key; with one, limits are higher
 	KeyURL       string            `json:"key_url,omitempty"`      // where to create the key
 	AccountEnv   string            `json:"account_env,omitempty"`  // the url has {account}: the variable that may hold the account id (else the key file, under "<id>.account")
+	MaxTokens    int               `json:"max_tokens,omitempty"`   // sent as max_tokens, for a provider whose default cuts replies short
 	Bin          string            `json:"bin,omitempty"`
 	AskArgs      []string          `json:"ask_args,omitempty"`
 	ModelArgs    []string          `json:"model_args,omitempty"`
@@ -248,7 +249,11 @@ func (p *openAI) Models(ctx context.Context) []string {
 }
 
 func (p *openAI) Ask(ctx context.Context, r Request) (string, error) {
-	body, _ := json.Marshal(map[string]any{"model": r.Model, "messages": r.Messages})
+	req := map[string]any{"model": r.Model, "messages": r.Messages}
+	if p.cfg.MaxTokens > 0 {
+		req["max_tokens"] = p.cfg.MaxTokens
+	}
+	body, _ := json.Marshal(req)
 	key := p.key()
 	code, out, err := HTTPDo(ctx, p.client, http.MethodPost, p.url(p.cfg.URL), body, key)
 	if err != nil {

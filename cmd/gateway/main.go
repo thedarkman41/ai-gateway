@@ -37,6 +37,8 @@ const usage = `usage: gateway <command> [flags]
   reset    reset [provider]: clear the rests on one provider, or on all of them
   fanout   fanout [-all] <prompt>...: run the dispatch/collect loop from the terminal. Each prompt is
            a task spread over the free providers; -all sends one prompt to every free provider
+  ask      ask <model> [prompt]: one question through the gateway's own routing, as Bill's ask tool
+           does: model fallback, rests and retries included
   try      try <provider> [prompt]: one ask straight to a provider, disabled ones included;
            for a terminal-driven provider it also prints the screen the reply was read from
   probe    survey the candidate providers (providers/candidates.json)
@@ -103,6 +105,21 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Print(g.Status(ctx))
+	case "ask":
+		fs := flag.NewFlagSet("ask", flag.ExitOnError)
+		g := open(fs, os.Args[2:])
+		if fs.NArg() < 1 {
+			log.Fatal("usage: gateway ask <model> [prompt]   (model: auto, a provider, or provider/model)")
+		}
+		prompt := "Reply with exactly one word: PONG"
+		if fs.NArg() > 1 {
+			prompt = fs.Arg(1)
+		}
+		ans, err := g.Ask(ctx, fs.Arg(0), "", prompt, "")
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("[answered by %s]\n\n%s\n", ans.Used, ans.Text)
 	case "key":
 		runKey(os.Args[2:])
 	case "fanout":

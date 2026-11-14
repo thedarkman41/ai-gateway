@@ -54,7 +54,8 @@ type Config struct {
 	Bin          string            `json:"bin,omitempty"`
 	AskArgs      []string          `json:"ask_args,omitempty"`
 	ModelArgs    []string          `json:"model_args,omitempty"`
-	Env          map[string]string `json:"env,omitempty"` // extra environment for a CLI
+	Env          map[string]string `json:"env,omitempty"`   // extra environment for a CLI
+	Strip        []string          `json:"strip,omitempty"` // regexes removed from a CLI's output, for a notice the CLI prints around its answer
 
 	// kind tty: an interactive terminal app driven through a pseudo-terminal.
 	Args               []string `json:"args,omitempty"`               // launch arguments; {scratch} is the scratch directory
@@ -118,7 +119,15 @@ func parse(data []byte, all bool) ([]Provider, error) {
 			if c.Bin == "" || !hasPrompt(c.AskArgs) {
 				return nil, fmt.Errorf("%s: bin and ask_args with {prompt} are required", c.ID)
 			}
-			out = append(out, &cli{cfg: c})
+			p := &cli{cfg: c}
+			for _, st := range c.Strip {
+				re, err := regexp.Compile(st)
+				if err != nil {
+					return nil, fmt.Errorf("%s: strip: %w", c.ID, err)
+				}
+				p.strip = append(p.strip, re)
+			}
+			out = append(out, p)
 		case "tty":
 			if c.Bin == "" {
 				return nil, fmt.Errorf("%s: bin is required", c.ID)
@@ -195,7 +204,10 @@ func (p *openAI) Ask(ctx context.Context, r Request) (string, error) {
 
 // ---- vendor CLI, run headless ----
 
-type cli struct{ cfg Config }
+type cli struct {
+	cfg   Config
+	strip []*regexp.Regexp
+}
 
 func (p *cli) Config() Config { return p.cfg }
 
@@ -251,7 +263,11 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 	}
 	cmd.WaitDelay = 5 * time.Second
 	runErr := cmd.Run()
-	text := strings.TrimSpace(ansi.ReplaceAllString(stdout.String(), ""))
+	text := ansi.ReplaceAllString(stdout.String(), "")
+	for _, re := range p.strip {
+		text = re.ReplaceAllString(text, "")
+	}
+	text = strings.TrimSpace(text)
 	if runErr != nil {
 		detail := firstNonEmpty(strings.TrimSpace(stderr.String()), text)
 		if why := reportedError(detail); why != "" { // the real cause, ahead of the CLI's generic line

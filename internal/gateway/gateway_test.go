@@ -354,3 +354,28 @@ func TestCLIReportFile(t *testing.T) {
 		t.Errorf("report file: %v", err)
 	}
 }
+
+// Copilot CLI prints which model it picked before the answer; the entry's strip pattern removes it.
+func TestCopilotNoticeIsStripped(t *testing.T) {
+	data, err := os.ReadFile("../../providers/providers.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Providers []map[string]any `json:"providers"`
+	}
+	json.Unmarshal(data, &f)
+	var strip any
+	for _, p := range f.Providers {
+		if p["id"] == "copilot-cli" {
+			strip = p["strip"]
+		}
+	}
+	cfg, _ := json.Marshal(map[string]any{"providers": []map[string]any{{"id": "c", "tier": "B", "kind": "cli", "bin": "printf", "strip": strip,
+		"ask_args": []string{"● Copilot Fusion selected MAI-Code-1.1-Flash because it was the best choice out of the models\n   available in your plan.\n\n%s\n\n● a bullet in the answer stays\n", "{prompt}"}}}})
+	g := build(t, string(cfg))
+	ans, err := g.Ask(context.Background(), "c", "", "PONG", "")
+	if err != nil || ans.Text != "PONG\n\n● a bullet in the answer stays" {
+		t.Errorf("got %q, %v", ans.Text, err)
+	}
+}

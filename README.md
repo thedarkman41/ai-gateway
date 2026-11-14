@@ -27,7 +27,8 @@ not written yet.
 | opencode | B | `opencode run -m` | the adapter works; the account's free allowance was spent when checked |
 | freebuff | B | terminal session (it has no prompt flag) | answered, reply read correctly |
 | qwen-code | B | `qwen -p` | disabled: its sign-in offers no free keyless option |
-| codex-cli, copilot-cli, amp, cursor-agent | B | each CLI's prompt flag | entries ready, flags from memory; each shows as unavailable until the CLI is installed and signed in |
+| copilot-cli | B | `copilot -p` | answered, on the Copilot Free plan |
+| codex-cli, amp, cursor-agent | B | each CLI's prompt flag | entries ready, flags from memory; each shows as unavailable until the CLI is installed and signed in |
 
 ## Build and check
 

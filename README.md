@@ -29,7 +29,7 @@ not written yet.
 | qwen-code | B | `qwen -p` | disabled: its sign-in offers no free keyless option |
 | copilot-cli | B | `copilot -p` | answered, on the Copilot Free plan |
 | codex-cli | B | `codex exec` | answered |
-| cursor-agent | B | `cursor-agent -p --trust` | first try stopped at the workspace-trust prompt; `--trust` added, not yet re-run |
+| cursor-agent | B | `cursor-agent -p --trust` | answered |
 | amp | B | `amp -x` | disabled: execute mode uses paid credits only |
 
 ## Build and check

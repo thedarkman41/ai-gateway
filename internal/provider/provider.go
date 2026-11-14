@@ -337,10 +337,7 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 	}
 	defer cleanup()
 	cmd.Dir = scratch
-	cmd.Env = os.Environ()
-	for k, v := range p.cfg.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = childEnv(p.cfg.Env)
 	cmd.WaitDelay = 5 * time.Second
 	runErr := cmd.Run()
 	text := ansi.ReplaceAllString(stdout.String(), "")
@@ -359,6 +356,25 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 		return "", fmt.Errorf("empty output: %s", Short(stderr.String()))
 	}
 	return text, nil
+}
+
+// childEnv is the gateway's environment with an entry's env applied: a value sets the variable,
+// and an empty value removes it. Removing matters: a CLI that finds an API key in its environment
+// uses it in preference to the account the user signed in with.
+func childEnv(set map[string]string) []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, overridden := set[name]; !overridden {
+			env = append(env, kv)
+		}
+	}
+	for k, v := range set {
+		if v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }
 
 // newScratch makes a fresh empty directory for one run of a coding-agent CLI and returns a function

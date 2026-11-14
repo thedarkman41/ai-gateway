@@ -135,10 +135,7 @@ func (p *tty) Session(ctx context.Context, r Request) (TTYResult, error) {
 	started := time.Now()
 	cmd := exec.Command(path, args...)
 	cmd.Dir = scratch
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-	for k, v := range p.cfg.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = append(childEnv(p.cfg.Env), "TERM=xterm-256color")
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(p.cols), Rows: uint16(p.rows)})
 	if err != nil {
 		return TTYResult{}, err

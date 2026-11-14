@@ -259,6 +259,13 @@ func runFanout(ctx context.Context, args []string) {
 	}
 }
 
+// hint describes a key without revealing it: its length and first four characters, enough to see
+// that the right provider's key was pasted (Groq's start gsk_, OpenRouter's sk-o, NVIDIA's nvap).
+func hint(key string) string {
+	key = strings.TrimSpace(key)
+	return fmt.Sprintf("(%d characters, starts %s…)", len(key), key[:min(4, len(key))])
+}
+
 func readKeys(path string) map[string]string {
 	keys := map[string]string{}
 	if b, err := os.ReadFile(path); err == nil {
@@ -310,9 +317,12 @@ func runKey(args []string) {
 			case c.AccountEnv != "" && os.Getenv(c.AccountEnv) == "" && keys[c.ID+".account"] == "":
 				state = "not set (needs an account id and a key)"
 			case os.Getenv(c.KeyEnv) != "":
-				state = "set (in $" + c.KeyEnv + ")"
+				state = "set in $" + c.KeyEnv + " " + hint(os.Getenv(c.KeyEnv))
+				if keys[c.ID] != "" {
+					state += "; the stored key is not used while that variable is set"
+				}
 			case keys[c.ID] != "":
-				state = "set"
+				state = "set " + hint(keys[c.ID])
 			case c.KeyOptional:
 				state = "not set (optional: works without, higher limits with)"
 			}

@@ -2,13 +2,14 @@
 
 A local MCP server that gives Bill the Cat (or any MCP client) access to other AI models.
 
-**Golden rule: free.** No provider may cost money or need a payment card. Most need no API key at all; a free API key is allowed where a provider offers a free tier that way. Access comes through these tiers:
+**Golden rule: no cost per use.** No provider may charge per call or need a payment card. Most need no API key; a free API key is allowed; and a flat subscription you already pay for may be used through its own CLI. Access comes through these tiers:
 
 | Tier | How it connects |
 |---|---|
 | A | Open HTTP endpoints, no account |
 | B | The vendor's own CLI, logged in with a free account, run headless |
 | C | Mailbox: a chat app connects to the gateway as an MCP host and pulls queued questions |
+| S | A subscription you already pay for, through the vendor's CLI |
 | K | A free API key on an OpenAI-compatible endpoint |
 | L | A model on your own machines |
 | D | Browser session: the gateway drives the web UI in your own logged-in Chrome profile |
@@ -23,7 +24,7 @@ not written yet.
 
 | Provider | Tier | Route | On betelgeuse |
 |---|---|---|---|
-| gemini-cli | B | `gemini -p` | answered on `gemini-flash-lite-latest`; the default model's daily quota was spent |
+| gemini-cli | S | `gemini -p`, signed in with Google | answered earlier on a free API key; now set to use the signed-in account (Google AI Pro), not yet re-run |
 | pollinations | A | OpenAI-compatible endpoint | answered |
 | llm7 | A | OpenAI-compatible endpoint | answered; only its keyless chat models are used |
 | opencode | B | `opencode run -m` | free allowance spent each time it was checked |
@@ -37,7 +38,10 @@ not written yet.
 | kilo, ovh | A | keyless endpoints | both answered |
 | groq | K | free API key | answered |
 | cloudflare | K | free API token and account id | answered |
-| gemini-api, openrouter, nvidia, cohere, zai | K | free API key | entries added; each is skipped until its key is set, none has answered yet |
+| cohere, zai | K | free API key | answered |
+| gemini-api | K | free API key | model names updated after the old one was refused as retired; not yet re-run |
+| openrouter | K | free API key | key stored but refused as missing; under investigation |
+| nvidia | K | free API key | timed out twice; under investigation |
 | sambanova | K | free API key | disabled: every model answered that a payment method is required |
 | mistral | K | free API key | disabled: its console requires a paid upgrade before a key can be created |
 

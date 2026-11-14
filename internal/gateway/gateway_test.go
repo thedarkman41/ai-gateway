@@ -685,3 +685,15 @@ func TestAccountInURL(t *testing.T) {
 		t.Errorf("with account: %+v, %v", ans, err)
 	}
 }
+
+// An empty env value removes the variable: a CLI must not find an API key it would prefer to the
+// account the user signed in with.
+func TestEmptyEnvValueRemovesTheVariable(t *testing.T) {
+	t.Setenv("AIGW_LEAKY_KEY", "from-the-shell")
+	g := build(t, `{"providers":[{"id":"c","tier":"B","kind":"cli","bin":"sh","preamble":"",
+		"env":{"AIGW_LEAKY_KEY":"","AIGW_ADDED":"yes"},
+		"ask_args":["-c","echo key=${AIGW_LEAKY_KEY-unset} added=$AIGW_ADDED # {prompt}"]}]}`)
+	if ans, err := g.Ask(context.Background(), "c", "", "x", ""); err != nil || ans.Text != "key=unset added=yes" {
+		t.Errorf("got %q, %v", ans.Text, err)
+	}
+}

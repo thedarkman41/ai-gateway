@@ -25,7 +25,7 @@ not written yet.
 | pollinations | A | OpenAI-compatible endpoint | answered |
 | llm7 | A | OpenAI-compatible endpoint | answered earlier; only some of its listed models are keyless, and the gateway learns which |
 | opencode | B | `opencode run -m` | the adapter works; the account's free allowance was spent when checked |
-| freebuff | B | terminal session (it has no prompt flag) | disabled until `ai-gateway try freebuff` shows a clean reply |
+| freebuff | B | terminal session (it has no prompt flag) | answered through the terminal session; reply patterns set from that screen, not yet re-run |
 
 ## Build and check
 

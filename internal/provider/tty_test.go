@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -70,4 +71,73 @@ func TestModelIDsKeepsKeylessChatModels(t *testing.T) {
 	if got := ModelIDs([]byte(`[{"name":"b"},{"id":"a"}]`)); strings.Join(got, ",") != "b,a" {
 		t.Errorf("plain list: %v", got)
 	}
+}
+
+// The freebuff 0.2.36 screen, as captured on betelgeuse by `ai-gateway try freebuff`.
+const freebuffScreen = ` ███ ██▀    ██▀    ▀█████   ▀████▀  ██████▀   ▀████▀   ██    ██
+
+ ┌─────────────────────────────────┐
+ │ May use data for AI training    │
+ │ Session active                  │
+ └─────────────────────────────────┘
+
+   [12:11 PM]
+   Summarise this, then
+   reply with one word ⎘
+
+  PONG, since you asked.
+
+    - an indented point
+                                                              ⎘ • 4s • △▽
+
+
+
+ 14K (1%)                                                ✕ End session
+╭────────────────────────────────────────────────────────────────────╮
+│  ▍Enter a coding task or / for commands                            │
+╰────────────────────────────────────────────────────────────────────╯
+ DeepSeek V4.1 Flash Fast • high · /tmp/ai-gateway-scratch · /model
+ to change · Chat: Summarise this, then reply with one word
+ ← for history · ? for help`
+
+func TestFreebuffEntryReadsItsScreen(t *testing.T) {
+	ps, err := Parse(providersJSON(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fb *tty
+	for _, p := range ps {
+		if p.Config().ID == "freebuff" {
+			fb = p.(*tty)
+		}
+	}
+	if fb == nil {
+		t.Fatal("no enabled freebuff entry")
+	}
+	prompt := "Summarise this, then\nreply with one word"
+	reply, found := fb.extract(freebuffScreen, prompt)
+	if !found || reply != "PONG, since you asked.\n\n  - an indented point" {
+		t.Errorf("reply %q found=%v", reply, found)
+	}
+	below, _ := fb.afterPrompt(freebuffScreen, prompt)
+	if !fb.doneRe.MatchString(below) {
+		t.Error("finished reply not recognised")
+	}
+	// Mid-reply (no duration line yet) is not finished; a screen without the prompt is an error.
+	mid := freebuffScreen[:strings.Index(freebuffScreen, "    - an indented")]
+	if below, _ := fb.afterPrompt(mid, prompt); fb.doneRe.MatchString(below) {
+		t.Error("unfinished reply taken as finished")
+	}
+	if _, found := fb.extract("  tail of a long reply\n  ⎘ • 9s • △▽", prompt); found {
+		t.Error("a reply whose start scrolled off was accepted")
+	}
+}
+
+func providersJSON(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile("../../providers/providers.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

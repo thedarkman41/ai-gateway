@@ -199,8 +199,9 @@ func (p *tty) Session(ctx context.Context, r Request) (TTYResult, error) {
 		if n <= typed || time.Since(submitted) < seconds(p.cfg.MinReplySeconds, 2) {
 			return false
 		}
-		if p.doneRe != nil {
-			return p.doneRe.MatchString(p.afterPrompt(text, prompt))
+		if p.doneRe != nil { // the pattern, then a short quiet spell so a still-drawing screen is not read
+			below, _ := p.afterPrompt(text, prompt)
+			return p.doneRe.MatchString(below) && idle >= seconds(p.cfg.DoneIdleSeconds, 1)
 		}
 		return idle >= seconds(p.cfg.DoneIdleSeconds, 6)
 	})
@@ -209,7 +210,11 @@ func (p *tty) Session(ctx context.Context, r Request) (TTYResult, error) {
 	if err != nil && !errors.Is(err, errExited) {
 		return res, fmt.Errorf("reply did not finish: %w", err)
 	}
-	res.Reply = p.extract(text, prompt)
+	var found bool
+	res.Reply, found = p.extract(text, prompt)
+	if !found {
+		return res, errors.New("the start of the reply is not on the screen: it was too long and scrolled off, or the app's layout changed")
+	}
 	if res.Reply == "" {
 		return res, errors.New("no reply found on the screen (the entry's reply patterns may need tuning; see `ai-gateway try`)")
 	}
@@ -240,8 +245,9 @@ func (p *tty) wait(ctx context.Context, sc *screen, max time.Duration, ok func(t
 	}
 }
 
-// afterPrompt returns the screen below the line where the typed prompt (or reply_start) last appears.
-func (p *tty) afterPrompt(text, prompt string) string {
+// afterPrompt returns the screen below the line where the typed prompt (or reply_start) last
+// appears, and whether that line was found.
+func (p *tty) afterPrompt(text, prompt string) (string, bool) {
 	lines := strings.Split(text, "\n")
 	start := -1
 	if p.startRe != nil {
@@ -261,12 +267,15 @@ func (p *tty) afterPrompt(text, prompt string) string {
 			}
 		}
 	}
-	return strings.Join(lines[start+1:], "\n")
+	return strings.Join(lines[start+1:], "\n"), start >= 0
 }
 
-func (p *tty) extract(text, prompt string) string {
+// extract returns the reply lines: below the prompt, up to reply_end, without dropped lines, and
+// with the indent the app adds to every line removed.
+func (p *tty) extract(text, prompt string) (string, bool) {
+	below, found := p.afterPrompt(text, prompt)
 	var out []string
-	for _, l := range strings.Split(p.afterPrompt(text, prompt), "\n") {
+	for _, l := range strings.Split(below, "\n") {
 		if p.endRe != nil && p.endRe.MatchString(l) {
 			break
 		}
@@ -278,7 +287,18 @@ func (p *tty) extract(text, prompt string) string {
 			out = append(out, l)
 		}
 	}
-	return strings.TrimSpace(strings.Join(out, "\n"))
+	indent := -1
+	for _, l := range out {
+		if t := strings.TrimLeft(l, " "); t != "" && (indent < 0 || len(l)-len(t) < indent) {
+			indent = len(l) - len(t)
+		}
+	}
+	for i, l := range out {
+		if len(l) >= indent && indent > 0 {
+			out[i] = l[indent:]
+		}
+	}
+	return strings.TrimSpace(strings.Join(out, "\n")), found
 }
 
 // answerQueries replies to the terminal queries a full-screen app sends at startup (cursor position,

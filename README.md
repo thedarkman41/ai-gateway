@@ -91,6 +91,13 @@ For a large coding task, Bill plans and judges and the other models do the parts
 Workers only ever see the prompt text: they do not touch the repository, and Bill applies what it accepts.
 [`bill/fan-out.md`](bill/fan-out.md) is the skill that teaches Bill this loop; copy it to `billcat-skills/agent/`.
 
+To run the same loop from a terminal, without Bill:
+
+```bash
+ai-gateway fanout "Write a Python function that parses ISO dates." "Write pytest tests for an ISO date parser."
+ai-gateway fanout -all "Write a Python function is_prime(n). Reply with only the code."   # every free provider, to compare
+```
+
 Finished results are saved under `~/.ai-gateway/jobs/`, so they survive Bill stopping an idle gateway (after five
 minutes without a call). Tasks still running at that moment are lost and reported as such; running the gateway as an
 HTTP service (`serve -http`) avoids that.

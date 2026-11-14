@@ -79,6 +79,18 @@ func (g *Gateway) SetJobsDir(dir string) {
 	}
 }
 
+// Free lists the providers that can take work right now, in file order.
+func (g *Gateway) Free() []string {
+	var free []string
+	for _, p := range g.providers {
+		cfg := p.Config()
+		if p.Available() == nil && g.ledger.Blocked(cfg.ID, cfg.DailyLimit, g.now()) == "" {
+			free = append(free, cfg.ID)
+		}
+	}
+	return free
+}
+
 // Dispatch starts a job and returns its id and who got which task.
 func (g *Gateway) Dispatch(tasks []Task) (id, plan string, err error) {
 	if len(tasks) == 0 || len(tasks) > maxTasks {

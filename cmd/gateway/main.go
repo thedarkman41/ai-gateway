@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/thedarkman41/ai-gateway/internal/gateway"
@@ -28,6 +29,8 @@ const usage = `usage: gateway <command> [flags]
   serve    run the MCP server on stdio, or on HTTP with -http 127.0.0.1:8765
   check    send a test prompt through every configured provider
   models   print the providers, their state and their models
+  fanout   fanout [-all] <prompt>...: run the dispatch/collect loop from the terminal. Each prompt is
+           a task spread over the free providers; -all sends one prompt to every free provider
   try      try <provider> [prompt]: one ask straight to a provider, disabled ones included;
            for a terminal-driven provider it also prints the screen the reply was read from
   probe    survey the candidate providers (providers/candidates.json)
@@ -87,6 +90,8 @@ func main() {
 		fmt.Print(g.Status(ctx))
 	case "try":
 		runTry(ctx, os.Args[2:])
+	case "fanout":
+		runFanout(ctx, os.Args[2:])
 	case "probe":
 		runProbe(ctx, os.Args[2:])
 	default:
@@ -171,6 +176,47 @@ func runTry(ctx context.Context, args []string) {
 		return
 	}
 	log.Fatalf("no provider %q in the %s list", fs.Arg(0), from)
+}
+
+// runFanout drives a real job from the terminal the way Bill would: dispatch, then collect results
+// one at a time as they finish.
+func runFanout(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("fanout", flag.ExitOnError)
+	all := fs.Bool("all", false, "send the one prompt to every free provider, to compare them")
+	g := open(fs, args)
+	prompts := fs.Args()
+	if len(prompts) == 0 || (*all && len(prompts) != 1) {
+		log.Fatal("usage: gateway fanout <prompt>...   or   gateway fanout -all <prompt>")
+	}
+	var tasks []gateway.Task
+	if *all {
+		for _, id := range g.Free() {
+			tasks = append(tasks, gateway.Task{ID: id, Prompt: prompts[0], Models: []string{id}})
+		}
+		if len(tasks) == 0 {
+			log.Fatal("no provider is free right now; see `gateway models`")
+		}
+	} else {
+		for i, p := range prompts {
+			tasks = append(tasks, gateway.Task{ID: fmt.Sprintf("task%d", i+1), Prompt: p})
+		}
+	}
+	start := time.Now()
+	id, plan, err := g.Dispatch(tasks)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s\n\n", plan)
+	for {
+		out, err := g.Collect(ctx, id, 4*time.Minute, 1)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("[%3.0fs] %s\n\n", time.Since(start).Seconds(), out)
+		if strings.Contains(out, "is complete") || strings.Contains(out, "Lost when") {
+			return
+		}
+	}
 }
 
 func defaultState() string {

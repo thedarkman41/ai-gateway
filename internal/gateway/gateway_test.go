@@ -51,6 +51,12 @@ func (f *fake) server(t *testing.T) *httptest.Server {
 		case strings.HasPrefix(m, "spent"):
 			http.Error(w, `Error: Free usage limit reached.`, 400)
 			return
+		case strings.HasPrefix(m, "cutfence"):
+			w.Write([]byte(`{"choices":[{"message":{"content":"Here:\n` + "```" + `python\ndef f():\n    pass\n# more"},"finish_reason":"stop"}]}`))
+			return
+		case strings.HasPrefix(m, "cutlength"):
+			w.Write([]byte(`{"choices":[{"message":{"content":"The answer is forty"},"finish_reason":"length"}]}`))
+			return
 		case strings.HasPrefix(m, "slow"):
 			time.Sleep(700 * time.Millisecond)
 		case strings.HasPrefix(m, "broken"):
@@ -577,5 +583,45 @@ func TestRateLimitIsNotADailyQuota(t *testing.T) {
 	}
 	if g.Reset("nope") == nil {
 		t.Error("reset of an unknown provider accepted")
+	}
+}
+
+func TestUnfence(t *testing.T) {
+	code := "def is_prime(n):\n    return n > 1"
+	for in, want := range map[string]string{
+		"```python\n" + code + "\n```":              code,
+		"```\n" + code + "\n```\n":                  code,
+		"  ```c++\r\n" + code + "\r\n```":           code,
+		code:                                        code,
+		"Here it is:\n```python\n" + code + "\n```": "Here it is:\n```python\n" + code + "\n```",
+		"```py\na\n```\nand\n```py\nb\n```":         "```py\na\n```\nand\n```py\nb\n```",
+		"```python\n```":                            "```python\n```",
+	} {
+		if got := unfence(in); got != want {
+			t.Errorf("unfence(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// End to end: a provider that wraps its whole answer in a fence returns bare code.
+	g := build(t, `{"providers":[{"id":"c","tier":"B","kind":"cli","bin":"printf","preamble":"","ask_args":["`+"```"+`python\\nprint(1)\\n`+"```"+`\\n%.0s","{prompt}"]}]}`)
+	if ans, err := g.Ask(context.Background(), "c", "", "x", ""); err != nil || ans.Text != "print(1)" {
+		t.Errorf("got %q, %v", ans.Text, err)
+	}
+}
+
+// A reply that stops mid-answer is a failure to retry elsewhere, not an answer.
+func TestCutOffReplyIsRetried(t *testing.T) {
+	f := &fake{}
+	srv := f.server(t)
+	g := build(t, fmt.Sprintf(`{"providers":[
+		{"id":"p","tier":"A","kind":"openai","url":"%[1]s/chat","models":["cutfence","cutlength","live"]}]}`, srv.URL))
+	ans, err := g.Ask(context.Background(), "p", "", "hi", "")
+	if err != nil || ans.Used != "p/live" || f.count() != 3 {
+		t.Errorf("got %+v, %v after %d calls; want p/live after 3", ans, err, f.count())
+	}
+	if _, err := g.Ask(context.Background(), "p/cutfence", "", "hi", ""); err == nil || !strings.Contains(err.Error(), "cut off inside a code block") {
+		t.Errorf("pinned: %v", err)
+	}
+	if cutOff("Use ` for inline and ``` for blocks.\n```py\nx\n```") {
+		t.Error("a fence mentioned mid-line was counted")
 	}
 }

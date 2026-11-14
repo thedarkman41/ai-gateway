@@ -126,7 +126,11 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 			}
 			attempts++
 			text, err := g.call(ctx, p, provider.Request{Model: m, Messages: msgs})
+			if err == nil && cutOff(text) {
+				err = fmt.Errorf("the reply was cut off inside a code block after %d characters", len(text))
+			}
 			if err == nil {
+				text = unfence(text)
 				g.ledger.Result(id, m, nil, g.now())
 				g.remember(session, prompt, text)
 				return Answer{Text: text, Used: name}, nil
@@ -323,6 +327,32 @@ func (g *Gateway) Check(ctx context.Context) []CheckResult {
 		out = append(out, r)
 	}
 	return out
+}
+
+// cutOff reports a reply that stops inside a code block: an odd number of fence lines. That is what
+// a provider's output limit or server timeout looks like (Pollinations on betelgeuse, cut at 60
+// seconds), and half a file is worse than a failure the gateway can retry elsewhere.
+func cutOff(text string) bool {
+	fences := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			fences++
+		}
+	}
+	return fences%2 == 1
+}
+
+var fenceRe = regexp.MustCompile("(?s)\\A```[A-Za-z0-9_+.#-]*[ \\t]*\\r?\\n(.*?)\\r?\\n?```\\z")
+
+// unfence removes the Markdown code fence from a reply that is nothing but one fenced block, so
+// every provider returns bare code for a "reply with only the code" task. A reply with prose
+// around its code, or with several blocks, is left as it is: there the fences carry meaning.
+func unfence(text string) string {
+	t := strings.TrimSpace(text)
+	if m := fenceRe.FindStringSubmatch(t); m != nil && !strings.Contains(m[1], "```") && strings.TrimSpace(m[1]) != "" {
+		return m[1]
+	}
+	return text
 }
 
 type failure int

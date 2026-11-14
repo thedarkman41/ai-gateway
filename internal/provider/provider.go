@@ -212,6 +212,14 @@ func (p *openAI) Ask(ctx context.Context, r Request) (string, error) {
 	if !ok || strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("no reply text in: %s", Short(string(out)))
 	}
+	var fin struct {
+		Choices []struct {
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(out, &fin) == nil && len(fin.Choices) > 0 && fin.Choices[0].FinishReason == "length" {
+		return "", fmt.Errorf("the reply was cut off at the provider's output limit after %d characters", len(text))
+	}
 	return strings.TrimSpace(text), nil
 }
 

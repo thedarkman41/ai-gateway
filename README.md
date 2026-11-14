@@ -102,6 +102,12 @@ Finished results are saved under `~/.ai-gateway/jobs/`, so they survive Bill sto
 minutes without a call). Tasks still running at that moment are lost and reported as such; running the gateway as an
 HTTP service (`serve -http`) avoids that.
 
+## Replies are normalised
+
+A reply that is nothing but one fenced code block (` ```python ... ``` `) comes back as the bare code, so every
+provider answers a "reply with only the code" task the same way. A reply with prose around its code, or several
+blocks, keeps its fences. A reply that stops inside a code block, or that the provider marks as cut at its output limit, counts as a failure and is retried on the next model or provider.
+
 ## How it stays up
 
 - **Fallback.** `auto` walks the providers in file order and skips any that is not installed, resting or over quota.

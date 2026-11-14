@@ -663,3 +663,19 @@ func TestKeyedProvider(t *testing.T) {
 		t.Errorf("the key leaked into an error: %v", err)
 	}
 }
+
+// Cloudflare's address carries an account id; the provider is skipped until both id and key are set.
+func TestAccountInURL(t *testing.T) {
+	f := &fake{}
+	srv := f.server(t)
+	g := build(t, fmt.Sprintf(`{"providers":[{"id":"cf","tier":"K","kind":"openai","url":"%s/{account}/chat","default_model":"live",
+		"key_env":"AIGW_TEST_TOKEN","account_env":"AIGW_TEST_ACCOUNT"}]}`, srv.URL))
+	t.Setenv("AIGW_TEST_TOKEN", "tok")
+	if len(g.Free()) != 0 {
+		t.Error("usable without an account id")
+	}
+	t.Setenv("AIGW_TEST_ACCOUNT", "acct42")
+	if ans, err := g.Ask(context.Background(), "cf", "", "hi", ""); err != nil || ans.Used != "cf/live" {
+		t.Errorf("with account: %+v, %v", ans, err)
+	}
+}

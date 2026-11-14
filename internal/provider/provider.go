@@ -55,6 +55,7 @@ type Config struct {
 	KeyEnv       string            `json:"key_env,omitempty"`      // the provider needs a free API key: the environment variable that may hold it (else the key file)
 	KeyOptional  bool              `json:"key_optional,omitempty"` // works without the key; with one, limits are higher
 	KeyURL       string            `json:"key_url,omitempty"`      // where to create the key
+	AccountEnv   string            `json:"account_env,omitempty"`  // the url has {account}: the variable that may hold the account id (else the key file, under "<id>.account")
 	Bin          string            `json:"bin,omitempty"`
 	AskArgs      []string          `json:"ask_args,omitempty"`
 	ModelArgs    []string          `json:"model_args,omitempty"`
@@ -207,8 +208,18 @@ func (p *openAI) key() string {
 	return strings.TrimSpace(KeyLookup(p.cfg.ID, p.cfg.KeyEnv))
 }
 
+func (p *openAI) account() string {
+	if p.cfg.AccountEnv == "" {
+		return ""
+	}
+	return strings.TrimSpace(KeyLookup(p.cfg.ID+".account", p.cfg.AccountEnv))
+}
+
+// url fills the account id into an address that carries one (Cloudflare).
+func (p *openAI) url(u string) string { return strings.ReplaceAll(u, "{account}", p.account()) }
+
 func (p *openAI) Available() error {
-	if p.cfg.KeyEnv != "" && !p.cfg.KeyOptional && p.key() == "" {
+	if (p.cfg.KeyEnv != "" && !p.cfg.KeyOptional && p.key() == "") || (p.cfg.AccountEnv != "" && p.account() == "") {
 		return fmt.Errorf("no API key set (run: ai-gateway key set %s)", p.cfg.ID)
 	}
 	return nil
@@ -223,7 +234,7 @@ func (p *openAI) Models(ctx context.Context) []string {
 	if p.cfg.ModelsURL != "" && time.Since(p.fetched) > 10*time.Minute {
 		p.fetched = time.Now() // also after a failure, so a dead list is not refetched on every call
 		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		if code, body, err := HTTPDo(cctx, p.client, http.MethodGet, p.cfg.ModelsURL, nil, p.key()); err == nil && code == 200 {
+		if code, body, err := HTTPDo(cctx, p.client, http.MethodGet, p.url(p.cfg.ModelsURL), nil, p.key()); err == nil && code == 200 {
 			ids := slices.DeleteFunc(ModelIDs(body), func(id string) bool {
 				return notChat.MatchString(id) || (p.filter != nil && !p.filter.MatchString(id))
 			})
@@ -239,7 +250,7 @@ func (p *openAI) Models(ctx context.Context) []string {
 func (p *openAI) Ask(ctx context.Context, r Request) (string, error) {
 	body, _ := json.Marshal(map[string]any{"model": r.Model, "messages": r.Messages})
 	key := p.key()
-	code, out, err := HTTPDo(ctx, p.client, http.MethodPost, p.cfg.URL, body, key)
+	code, out, err := HTTPDo(ctx, p.client, http.MethodPost, p.url(p.cfg.URL), body, key)
 	if err != nil {
 		return "", err
 	}

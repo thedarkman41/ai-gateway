@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -289,6 +290,8 @@ func runKey(args []string) {
 			}
 			state := "not set"
 			switch {
+			case c.AccountEnv != "" && os.Getenv(c.AccountEnv) == "" && keys[c.ID+".account"] == "":
+				state = "not set (needs an account id and a key)"
 			case os.Getenv(c.KeyEnv) != "":
 				state = "set (in $" + c.KeyEnv + ")"
 			case keys[c.ID] != "":
@@ -301,6 +304,15 @@ func runKey(args []string) {
 	case fs.NArg() == 2 && fs.Arg(0) == "set":
 		c := find(fs.Arg(1))
 		var key string
+		in := bufio.NewReader(os.Stdin)
+		if c.AccountEnv != "" { // not a secret, but the provider's address needs it
+			fmt.Printf("%s account id: ", c.ID)
+			line, _ := in.ReadString('\n')
+			if line = strings.TrimSpace(line); line == "" {
+				log.Fatal("no account id entered; nothing changed")
+			}
+			keys[c.ID+".account"] = line
+		}
 		if term.IsTerminal(int(os.Stdin.Fd())) {
 			fmt.Printf("Create a free key at %s\nPaste the %s key (input is hidden): ", c.KeyURL, c.ID)
 			b, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -310,7 +322,7 @@ func runKey(args []string) {
 			}
 			key = string(b)
 		} else {
-			b, _ := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+			b, _ := io.ReadAll(io.LimitReader(in, 4096))
 			key = string(b)
 		}
 		if key = strings.TrimSpace(key); key == "" {
@@ -322,6 +334,7 @@ func runKey(args []string) {
 	case fs.NArg() == 2 && fs.Arg(0) == "remove":
 		c := find(fs.Arg(1))
 		delete(keys, c.ID)
+		delete(keys, c.ID+".account")
 		save()
 		fmt.Printf("removed the %s key\n", c.ID)
 	default:

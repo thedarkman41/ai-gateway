@@ -34,8 +34,9 @@ not written yet.
 | cursor-agent | B | `cursor-agent -p --trust` | answered |
 | amp | B | `amp -x` | disabled: execute mode uses paid credits only |
 | rigel-coder | L | Loadout endpoint on rigel | answered |
-| kilo, ovh | A | keyless endpoints | entries added from a public list of free APIs; not yet called |
-| groq, gemini-api, openrouter, nvidia, cohere, zai | K | free API key | entries added from the same list; each is skipped until its key is set |
+| kilo, ovh | A | keyless endpoints | both answered |
+| groq | K | free API key | answered |
+| gemini-api, openrouter, nvidia, cohere, zai, mistral, sambanova, cloudflare | K | free API key | entries added; each is skipped until its key is set, none called yet |
 
 ## Build and check
 

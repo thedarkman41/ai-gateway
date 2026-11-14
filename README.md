@@ -16,25 +16,67 @@ rotation, no forged client tokens. A challenged provider marks itself down until
 
 ## Status
 
-Phase 1 (survey) only. The MCP server itself is not written yet.
+Phases 1 and 2 are done: the survey, and the MCP server with the first four providers. Tiers C and D are
+not written yet.
+
+| Provider | Tier | Route | Verified on betelgeuse |
+|---|---|---|---|
+| gemini-cli | B | `gemini -p` | installed; prompt path not yet run |
+| pollinations | A | OpenAI-compatible endpoint | answered in the survey |
+| llm7 | A | OpenAI-compatible endpoint | lists 71 models; the one tried was unavailable, so the gateway now tries the first three listed |
+| opencode | B | `opencode run` | installed; prompt path not yet run |
+
+## Build and check
+
+```bash
+go build -o /usr/local/bin/ai-gateway ./cmd/gateway
+ai-gateway check     # one test prompt through every provider
+ai-gateway models    # providers, state, calls today, model ids
+```
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `list_models` | Providers, whether each can be called now, calls used today, model ids |
+| `ask` | One question to one model. `model` is `auto` (default: first provider that answers), a provider id, or `provider/model`. `session` continues a conversation |
+| `ask_many` | The same question to 2 to 6 models at once, for comparison |
+
+## How it stays up
+
+- **Fallback.** `auto` walks the providers in file order and skips any that is not installed, resting or over quota.
+- **Model retry.** When no model is named, a provider's first three listed models are tried in turn.
+- **Breaker.** Three failed asks in a row rest a provider for 10 minutes.
+- **Spacing and quota.** `min_interval_seconds` spaces calls out; `daily_limit` caps them. Both live in `~/.ai-gateway/ledger.json`, so they survive restarts.
+- **Fix without rebuilding.** Copy `providers/providers.json` to `~/.ai-gateway/providers.json` and edit it; that copy replaces the built-in list.
+
+## Connecting Bill the Cat
+
+1. Build the binary to `/usr/local/bin/ai-gateway` (above).
+2. Add the object in [`bill/catalog-entry.json`](bill/catalog-entry.json) to the `catalog` array of
+   `~/Library/Application Support/BillCat/mcp.json`. Check its `pathDirs` against `which gemini opencode`.
+3. In the app, ask Bill to use it. Bill shows the entry for your approval the first time, and asks before each
+   `ask` or `ask_many` because they send data to other services.
+
+To run it as a local HTTP server instead: `ai-gateway serve -http 127.0.0.1:8765`, with `"transport": "http"` and
+`"url": "http://127.0.0.1:8765/mcp"` in the entry. It refuses any request that does not come from this machine.
 
 ## Survey
 
-`providers/candidates.json` lists candidate providers. Every entry is a guess until the probe has passed
-it on the machine the gateway will run on (betelgeuse): results depend on that network and those accounts.
+`providers/candidates.json` lists candidate providers that are not adapters yet. Results depend on the machine's
+network and accounts, so run it on betelgeuse.
 
 ```bash
-go build -o gateway ./cmd/gateway
-./gateway probe            # tier A prompts, CLI presence, tier D reachability
-./gateway probe -ask-cli   # also send one prompt through each installed CLI
+ai-gateway probe            # tier A prompts, CLI presence, tier D reachability
+ai-gateway probe -ask-cli   # also send one prompt through each installed CLI
 ```
 
 It prints the provider matrix and writes `survey/survey.md` and `survey/survey.json`.
 
 ## Phases
 
-1. Survey (this)
-2. Core: MCP server (stdio + localhost HTTP), adapter interface, quota ledger, tier A adapters, Bill registry entry
+1. Survey (done)
+2. Core (done): MCP server (stdio + localhost HTTP), adapter interface, quota ledger, tier A adapters, Bill registry entry
 3. Tier B CLI adapters
 4. Tier D browser engine; Muse and Perplexity first
 5. Tier C mailbox and tunnel

@@ -1,0 +1,20 @@
+{
+  "id": "ai-gateway",
+  "title": "AI Gateway (free, keyless models)",
+  "transport": "stdio",
+  "command": "/usr/local/bin/ai-gateway",
+  "args": ["serve"],
+  "version": "0.2.0 (built from github.com/thedarkman41/ai-gateway)",
+  "home": "~",
+  "pathDirs": ["/usr/local/bin", "~/.local/bin", "~/.opencode/bin"],
+  "trust": "community",
+  "platform": "macos",
+  "notes": "Lets Bill ask other AI models through free, keyless routes. home is ~ because the vendor CLIs (gemini, opencode) read their login from your real home and the quota ledger lives in ~/.ai-gateway. pathDirs must include the directories that hold gemini and opencode (run `which gemini opencode`). ask and ask_many send the prompt to third-party services.",
+  "toolPolicy": {
+    "list_models": "read",
+    "ask": "network-send",
+    "ask_many": "network-send"
+  },
+  "timeoutSeconds": 600,
+  "enabled": true
+}

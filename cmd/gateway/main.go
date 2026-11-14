@@ -28,6 +28,8 @@ const usage = `usage: gateway <command> [flags]
   serve    run the MCP server on stdio, or on HTTP with -http 127.0.0.1:8765
   check    send a test prompt through every configured provider
   models   print the providers, their state and their models
+  try      try <provider> [prompt]: one ask straight to a provider, disabled ones included;
+           for a terminal-driven provider it also prints the screen the reply was read from
   probe    survey the candidate providers (providers/candidates.json)
 
 serve, check and models take -config <file> and -state <dir>.`
@@ -83,6 +85,8 @@ func main() {
 	case "models":
 		g := open(flag.NewFlagSet("models", flag.ExitOnError), os.Args[2:])
 		fmt.Print(g.Status(ctx))
+	case "try":
+		runTry(ctx, os.Args[2:])
 	case "probe":
 		runProbe(ctx, os.Args[2:])
 	default:
@@ -94,25 +98,77 @@ func main() {
 // open parses the shared flags and builds the gateway. The provider list is -config if given, else
 // <state>/providers.json if it exists, else the list built into the binary.
 func open(fs *flag.FlagSet, args []string) *gateway.Gateway {
-	config := fs.String("config", "", "providers file (default: <state>/providers.json, else built in)")
-	state := fs.String("state", defaultState(), "directory for the quota ledger")
-	fs.Parse(args)
-
-	data, from := providers.Active, "built-in"
-	path := *config
-	if path == "" {
-		path = filepath.Join(*state, "providers.json")
-	}
-	if b, err := os.ReadFile(path); err == nil {
-		data, from = b, path
-	} else if *config != "" {
-		log.Fatal(err)
-	}
+	data, from, state := config(fs, args)
 	ps, err := provider.Parse(data)
 	if err != nil {
 		log.Fatalf("%s providers: %v", from, err)
 	}
-	return gateway.New(ps, gateway.OpenLedger(filepath.Join(*state, "ledger.json")))
+	return gateway.New(ps, gateway.OpenLedger(filepath.Join(state, "ledger.json")))
+}
+
+// config parses the shared flags and returns the providers document, where it came from and the
+// state directory.
+func config(fs *flag.FlagSet, args []string) (data []byte, from, state string) {
+	file := fs.String("config", "", "providers file (default: <state>/providers.json, else built in)")
+	dir := fs.String("state", defaultState(), "directory for the quota ledger")
+	fs.Parse(args)
+
+	data, from = providers.Active, "built-in"
+	path := *file
+	if path == "" {
+		path = filepath.Join(*dir, "providers.json")
+	}
+	if b, err := os.ReadFile(path); err == nil {
+		data, from = b, path
+	} else if *file != "" {
+		log.Fatal(err)
+	}
+	return data, from, *dir
+}
+
+// runTry sends one prompt straight to one provider, bypassing the ledger, so an entry can be tuned
+// before it is turned on.
+func runTry(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("try", flag.ExitOnError)
+	model := fs.String("model", "", "model to pass (default: the provider's own)")
+	data, from, _ := config(fs, args)
+	if fs.NArg() < 1 {
+		log.Fatal("usage: gateway try [-model m] <provider> [prompt]")
+	}
+	ps, err := provider.ParseAll(data)
+	if err != nil {
+		log.Fatalf("%s providers: %v", from, err)
+	}
+	prompt := "Reply with exactly one word: PONG"
+	if fs.NArg() > 1 {
+		prompt = fs.Arg(1)
+	}
+	for _, p := range ps {
+		if p.Config().ID != fs.Arg(0) {
+			continue
+		}
+		if *model == "" {
+			*model = p.Models(ctx)[0]
+		}
+		ctx, cancel := context.WithTimeout(ctx, p.Config().Timeout())
+		defer cancel()
+		req := provider.Request{Model: *model, Messages: []provider.Message{{Role: "user", Content: prompt}}}
+		var reply string
+		if s, ok := p.(provider.Screener); ok {
+			var res provider.TTYResult
+			res, err = s.Session(ctx, req)
+			reply = res.Reply
+			fmt.Printf("===== screen =====\n%s\n", res.Screen)
+		} else {
+			reply, err = p.Ask(ctx, req)
+		}
+		fmt.Printf("===== reply (%s) =====\n%s\n", *model, reply)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	log.Fatalf("no provider %q in the %s list", fs.Arg(0), from)
 }
 
 func defaultState() string {

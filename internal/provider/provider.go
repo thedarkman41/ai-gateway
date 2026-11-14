@@ -42,21 +42,36 @@ type Provider interface {
 
 // Config is one entry of providers.json.
 type Config struct {
-	ID                 string            `json:"id"`
-	Tier               string            `json:"tier"`
-	Kind               string            `json:"kind"` // openai | cli
-	URL                string            `json:"url,omitempty"`
-	ModelsURL          string            `json:"models_url,omitempty"`
-	DefaultModel       string            `json:"default_model,omitempty"`
-	StaticModels       []string          `json:"models,omitempty"`
-	Bin                string            `json:"bin,omitempty"`
-	AskArgs            []string          `json:"ask_args,omitempty"`
-	ModelArgs          []string          `json:"model_args,omitempty"`
-	Env                map[string]string `json:"env,omitempty"`      // extra environment for a CLI
-	Disabled           bool              `json:"disabled,omitempty"` // listed in the file but not served
-	TimeoutSeconds     int               `json:"timeout_seconds,omitempty"`
-	MinIntervalSeconds float64           `json:"min_interval_seconds,omitempty"`
-	DailyLimit         int               `json:"daily_limit,omitempty"`
+	ID           string            `json:"id"`
+	Tier         string            `json:"tier"`
+	Kind         string            `json:"kind"` // openai | cli | tty
+	URL          string            `json:"url,omitempty"`
+	ModelsURL    string            `json:"models_url,omitempty"`
+	DefaultModel string            `json:"default_model,omitempty"`
+	StaticModels []string          `json:"models,omitempty"`
+	Bin          string            `json:"bin,omitempty"`
+	AskArgs      []string          `json:"ask_args,omitempty"`
+	ModelArgs    []string          `json:"model_args,omitempty"`
+	Env          map[string]string `json:"env,omitempty"` // extra environment for a CLI
+
+	// kind tty: an interactive terminal app driven through a pseudo-terminal.
+	Args               []string `json:"args,omitempty"`               // launch arguments; {scratch} is the scratch directory
+	ReadyIdleSeconds   float64  `json:"ready_idle_seconds,omitempty"` // quiet this long after start = ready (default 2)
+	DoneIdleSeconds    float64  `json:"done_idle_seconds,omitempty"`  // quiet this long after the prompt = reply finished (default 6)
+	MinReplySeconds    float64  `json:"min_reply_seconds,omitempty"`  // never finish sooner than this (default 2)
+	DoneRegex          string   `json:"done_regex,omitempty"`         // if set, the reply is finished when this appears below the prompt
+	ReplyStart         string   `json:"reply_start,omitempty"`        // the reply begins after the last line matching this (default: the typed prompt)
+	ReplyEnd           string   `json:"reply_end,omitempty"`          // the reply ends before the first line matching this
+	Drop               []string `json:"drop,omitempty"`               // reply lines matching any of these are removed
+	NoPaste            bool     `json:"no_paste,omitempty"`           // type the prompt as plain keys on one line, not as a bracketed paste
+	Submit             string   `json:"submit,omitempty"`             // keys that send the prompt (default Enter)
+	Quit               string   `json:"quit,omitempty"`               // keys that close the app (default Ctrl-C twice)
+	Cols               int      `json:"cols,omitempty"`
+	Rows               int      `json:"rows,omitempty"`
+	Disabled           bool     `json:"disabled,omitempty"` // listed in the file but not served
+	TimeoutSeconds     int      `json:"timeout_seconds,omitempty"`
+	MinIntervalSeconds float64  `json:"min_interval_seconds,omitempty"`
+	DailyLimit         int      `json:"daily_limit,omitempty"`
 }
 
 func (c Config) Timeout() time.Duration {
@@ -66,8 +81,13 @@ func (c Config) Timeout() time.Duration {
 	return time.Duration(c.TimeoutSeconds) * time.Second
 }
 
-// Parse reads a providers.json document.
-func Parse(data []byte) ([]Provider, error) {
+// Parse reads a providers.json document, leaving out disabled entries.
+func Parse(data []byte) ([]Provider, error) { return parse(data, false) }
+
+// ParseAll is Parse including disabled entries, for trying one out before turning it on.
+func ParseAll(data []byte) ([]Provider, error) { return parse(data, true) }
+
+func parse(data []byte, all bool) ([]Provider, error) {
 	var f struct {
 		Providers []Config `json:"providers"`
 	}
@@ -81,7 +101,7 @@ func Parse(data []byte) ([]Provider, error) {
 			return nil, fmt.Errorf("provider id %q is empty, repeated, or contains a slash or space", c.ID)
 		}
 		seen[c.ID] = true
-		if c.Disabled {
+		if c.Disabled && !all {
 			continue
 		}
 		switch c.Kind {
@@ -95,6 +115,15 @@ func Parse(data []byte) ([]Provider, error) {
 				return nil, fmt.Errorf("%s: bin and ask_args with {prompt} are required", c.ID)
 			}
 			out = append(out, &cli{cfg: c})
+		case "tty":
+			if c.Bin == "" {
+				return nil, fmt.Errorf("%s: bin is required", c.ID)
+			}
+			p, err := newTTY(c)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, p)
 		default:
 			return nil, fmt.Errorf("%s: unknown kind %q", c.ID, c.Kind)
 		}

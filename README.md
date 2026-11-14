@@ -25,6 +25,7 @@ not written yet.
 | pollinations | A | OpenAI-compatible endpoint | answered |
 | llm7 | A | OpenAI-compatible endpoint | answered (a DeepSeek model) |
 | opencode | B | `opencode run -m` | enabled with its free hosted models only; not yet checked |
+| freebuff | B | terminal session (it has no prompt flag) | disabled until `ai-gateway try freebuff` shows a clean reply |
 
 ## Build and check
 
@@ -41,6 +42,23 @@ ai-gateway models    # providers, state, calls today, model ids
 | `list_models` | Providers, whether each can be called now, calls used today, model ids |
 | `ask` | One question to one model. `model` is `auto` (default: first provider that answers), a provider id, or `provider/model`. `session` continues a conversation |
 | `ask_many` | The same question to 2 to 6 models at once, for comparison |
+
+## One interface for every provider
+
+Bill never sees how a provider is reached. Every one is a model id under the same `ask` tool, whether the
+gateway calls an HTTP endpoint, runs a CLI with a prompt flag, or types into a terminal app:
+
+| Kind | Used for | How the reply comes back |
+|---|---|---|
+| `openai` | OpenAI-compatible endpoints | JSON response |
+| `cli` | CLIs with a prompt flag (`gemini -p`, `opencode run`) | the command's output |
+| `tty` | interactive terminal apps with no prompt flag (freebuff) | read off the rendered screen |
+
+A `tty` provider is the most fragile: a UI change can break which screen lines count as the reply. Tune an entry with:
+
+```bash
+ai-gateway try freebuff      # prints the final screen, then the reply extracted from it
+```
 
 ## How it stays up
 

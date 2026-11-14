@@ -19,12 +19,12 @@ rotation, no forged client tokens. A challenged provider marks itself down until
 Phases 1 and 2 are done: the survey, and the MCP server with the first four providers. Tiers C and D are
 not written yet.
 
-| Provider | Tier | Route | Verified on betelgeuse |
+| Provider | Tier | Route | On betelgeuse |
 |---|---|---|---|
-| gemini-cli | B | `gemini -p` | installed; prompt path not yet run |
-| pollinations | A | OpenAI-compatible endpoint | answered in the survey |
-| llm7 | A | OpenAI-compatible endpoint | lists 71 models; the one tried was unavailable, so the gateway now tries the first three listed |
-| opencode | B | `opencode run` | installed; prompt path not yet run |
+| gemini-cli | B | `gemini -p` | first check failed on the CLI's workspace-trust gate; now run with `GEMINI_CLI_TRUST_WORKSPACE=true`, not yet re-checked |
+| pollinations | A | OpenAI-compatible endpoint | answered |
+| llm7 | A | OpenAI-compatible endpoint | answered (a DeepSeek model; the first listed models were unavailable) |
+| opencode | B | `opencode run` | disabled: its default model there is the local bill-the-cat, so it needs a free hosted model set in `default_model` |
 
 ## Build and check
 
@@ -45,9 +45,10 @@ ai-gateway models    # providers, state, calls today, model ids
 ## How it stays up
 
 - **Fallback.** `auto` walks the providers in file order and skips any that is not installed, resting or over quota.
-- **Model retry.** When no model is named, a provider's first three listed models are tried in turn.
+- **Model retry.** When no model is named, the model that answered last time is tried first, then the provider's listed models, three attempts in all.
 - **Breaker.** Three failed asks in a row rest a provider for 10 minutes.
 - **Spacing and quota.** `min_interval_seconds` spaces calls out; `daily_limit` caps them. Both live in `~/.ai-gateway/ledger.json`, so they survive restarts.
+- **CLIs are sandboxed to a scratch directory.** The vendor CLIs are coding agents, so they start in an empty temp directory, never in a project.
 - **Fix without rebuilding.** Copy `providers/providers.json` to `~/.ai-gateway/providers.json` and edit it; that copy replaces the built-in list.
 
 ## Connecting Bill the Cat

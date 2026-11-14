@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -89,7 +90,12 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 		}
 		models := []string{pinned}
 		if pinned == "" {
+			// The model that answered last time goes first, so a provider whose default is
+			// unavailable is not retried from the top on every call.
 			models = p.Models(ctx)
+			if last := g.ledger.Snapshot(id, g.now()).LastModel; last != "" && slices.Contains(models, last) {
+				models = append([]string{last}, slices.DeleteFunc(slices.Clone(models), func(m string) bool { return m == last })...)
+			}
 			if len(models) > modelsTriedUnpin {
 				models = models[:modelsTriedUnpin]
 			}
@@ -101,7 +107,7 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 		for _, m := range models {
 			text, err := g.call(ctx, p, provider.Request{Model: m, Messages: msgs})
 			if err == nil {
-				g.ledger.Result(id, nil, g.now())
+				g.ledger.Result(id, m, nil, g.now())
 				g.remember(session, prompt, text)
 				return Answer{Text: text, Used: strings.TrimSuffix(id+"/"+m, "/")}, nil
 			}
@@ -111,7 +117,7 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 				break
 			}
 		}
-		g.ledger.Result(id, lastErr, g.now())
+		g.ledger.Result(id, "", lastErr, g.now())
 		if ctx.Err() != nil {
 			break
 		}

@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -40,19 +42,21 @@ type Provider interface {
 
 // Config is one entry of providers.json.
 type Config struct {
-	ID                 string   `json:"id"`
-	Tier               string   `json:"tier"`
-	Kind               string   `json:"kind"` // openai | cli
-	URL                string   `json:"url,omitempty"`
-	ModelsURL          string   `json:"models_url,omitempty"`
-	DefaultModel       string   `json:"default_model,omitempty"`
-	StaticModels       []string `json:"models,omitempty"`
-	Bin                string   `json:"bin,omitempty"`
-	AskArgs            []string `json:"ask_args,omitempty"`
-	ModelArgs          []string `json:"model_args,omitempty"`
-	TimeoutSeconds     int      `json:"timeout_seconds,omitempty"`
-	MinIntervalSeconds float64  `json:"min_interval_seconds,omitempty"`
-	DailyLimit         int      `json:"daily_limit,omitempty"`
+	ID                 string            `json:"id"`
+	Tier               string            `json:"tier"`
+	Kind               string            `json:"kind"` // openai | cli
+	URL                string            `json:"url,omitempty"`
+	ModelsURL          string            `json:"models_url,omitempty"`
+	DefaultModel       string            `json:"default_model,omitempty"`
+	StaticModels       []string          `json:"models,omitempty"`
+	Bin                string            `json:"bin,omitempty"`
+	AskArgs            []string          `json:"ask_args,omitempty"`
+	ModelArgs          []string          `json:"model_args,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`      // extra environment for a CLI
+	Disabled           bool              `json:"disabled,omitempty"` // listed in the file but not served
+	TimeoutSeconds     int               `json:"timeout_seconds,omitempty"`
+	MinIntervalSeconds float64           `json:"min_interval_seconds,omitempty"`
+	DailyLimit         int               `json:"daily_limit,omitempty"`
 }
 
 func (c Config) Timeout() time.Duration {
@@ -77,6 +81,9 @@ func Parse(data []byte) ([]Provider, error) {
 			return nil, fmt.Errorf("provider id %q is empty, repeated, or contains a slash or space", c.ID)
 		}
 		seen[c.ID] = true
+		if c.Disabled {
+			continue
+		}
 		switch c.Kind {
 		case "openai":
 			if c.URL == "" {
@@ -193,6 +200,17 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr // stdin stays closed: never wait on a login prompt
+	// These CLIs are coding agents that read and may edit the directory they start in, so they run
+	// in an empty scratch directory, never in a project.
+	scratch := filepath.Join(os.TempDir(), "ai-gateway-scratch")
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
+		return "", err
+	}
+	cmd.Dir = scratch
+	cmd.Env = os.Environ()
+	for k, v := range p.cfg.Env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 	cmd.WaitDelay = 5 * time.Second
 	runErr := cmd.Run()
 	text := strings.TrimSpace(ansi.ReplaceAllString(stdout.String(), ""))

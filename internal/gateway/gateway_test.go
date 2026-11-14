@@ -72,7 +72,9 @@ func TestAskRoutingAndFallback(t *testing.T) {
 		{"id":"nocli","tier":"B","kind":"cli","bin":"no-such-binary-xyz","ask_args":["{prompt}"]},
 		{"id":"a","tier":"A","kind":"openai","url":"%s/chat","models_url":"%s/models"},
 		{"id":"b","tier":"A","kind":"openai","url":"%s/chat","default_model":"live"},
-		{"id":"echo","tier":"B","kind":"cli","bin":"echo","ask_args":["cli got: {prompt}"],"model_args":["-n"]}
+		{"id":"echo","tier":"B","kind":"cli","bin":"echo","ask_args":["cli got: {prompt}"],"model_args":["-n"]},
+		{"id":"sh","tier":"B","kind":"cli","bin":"sh","ask_args":["-c","echo $(pwd) $TRUST # {prompt}"],"env":{"TRUST":"trusted"}},
+		{"id":"off","tier":"B","kind":"cli","bin":"echo","ask_args":["{prompt}"],"disabled":true}
 	]}`, sa.URL, sa.URL, sb.URL))
 	ctx := context.Background()
 
@@ -83,6 +85,11 @@ func TestAskRoutingAndFallback(t *testing.T) {
 	}
 	if a.count() != 2 || b.count() != 0 {
 		t.Errorf("auto: calls a=%d b=%d, want 2 and 0", a.count(), b.count())
+	}
+
+	// The model that worked is remembered: the next unpinned ask does not retry the dead one.
+	if ans, err = g.Ask(ctx, "a", "", "hi", ""); err != nil || ans.Used != "a/live" || a.count() != 3 {
+		t.Errorf("remembered model: %+v, %v, calls a=%d want 3", ans, err, a.count())
 	}
 
 	// A pinned model is not swapped for another one.
@@ -105,8 +112,14 @@ func TestAskRoutingAndFallback(t *testing.T) {
 		t.Errorf("cli: %+v, %v", ans, err)
 	}
 
+	// A CLI runs in the scratch directory with the entry's env, not in the caller's directory.
+	ans, err = g.Ask(ctx, "sh", "", "x", "")
+	if err != nil || !strings.HasSuffix(ans.Text, "ai-gateway-scratch trusted") {
+		t.Errorf("cli cwd and env: %+v, %v", ans, err)
+	}
+
 	// Unknown provider and empty prompt are refused with a usable message.
-	if _, err := g.Ask(ctx, "nope", "", "hi", ""); err == nil || !strings.Contains(err.Error(), "one of: nocli, a, b, echo") {
+	if _, err := g.Ask(ctx, "nope", "", "hi", ""); err == nil || !strings.Contains(err.Error(), "one of: nocli, a, b, echo, sh") {
 		t.Errorf("unknown provider: %v", err)
 	}
 	if _, err := g.Ask(ctx, "", "", "  ", ""); err == nil {

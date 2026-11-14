@@ -33,6 +33,7 @@ type Entry struct {
 	DownUntil time.Time `json:"down_until,omitzero"` // breaker: resting until then
 	LastError string    `json:"last_error,omitempty"`
 	LastOK    time.Time `json:"last_ok,omitzero"`
+	LastModel string    `json:"last_model,omitempty"` // the model that last answered
 }
 
 // OpenLedger loads the ledger at path; a missing or unreadable file starts empty. An empty path
@@ -92,13 +93,13 @@ func (l *Ledger) Attempt(id string, now time.Time) {
 	l.save()
 }
 
-// Result records how one ask to a provider ended.
-func (l *Ledger) Result(id string, err error, now time.Time) {
+// Result records how one ask to a provider ended, and on success the model that answered.
+func (l *Ledger) Result(id, model string, err error, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e := l.entry(id, now)
 	if err == nil {
-		e.Fails, e.LastError, e.LastOK, e.DownUntil = 0, "", now, time.Time{}
+		e.Fails, e.LastError, e.LastOK, e.DownUntil, e.LastModel = 0, "", now, time.Time{}, model
 	} else {
 		e.Fails++
 		e.LastError = err.Error()

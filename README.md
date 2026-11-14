@@ -36,7 +36,8 @@ not written yet.
 | rigel-coder | L | Loadout endpoint on rigel | answered |
 | kilo, ovh | A | keyless endpoints | both answered |
 | groq | K | free API key | answered |
-| gemini-api, openrouter, nvidia, cohere, zai, mistral, sambanova, cloudflare | K | free API key | entries added; each is skipped until its key is set, none called yet |
+| gemini-api, openrouter, nvidia, cohere, zai, sambanova, cloudflare | K | free API key | entries added; each is skipped until its key is set, none has answered yet |
+| mistral | K | free API key | disabled: its console requires a paid upgrade before a key can be created |
 
 ## Build and check
 

@@ -559,16 +559,17 @@ func TestEachCLIRunIsIsolated(t *testing.T) {
 // rested until midnight on betelgeuse and answered again minutes later.)
 func TestRateLimitIsNotADailyQuota(t *testing.T) {
 	for msg, want := range map[string]failure{
-		"HTTP 429: Rate limit exceeded. Quota: 1 request per 15 seconds":               busy,
-		"HTTP 429: Too many requests, limit reached":                                   busy,
-		"HTTP 429: You have exceeded your daily quota":                                 quota,
-		"exit status 1: You have exhausted your daily quota on this model.":            quota,
-		"exit status 1: Error: Free usage limit reached. Free models work in OpenCode": quota,
-		"empty output: Error: Out of Credits Add credits to keep using Amp.":           quota,
-		"HTTP 503: This model is temporarily busy. Please try again shortly":           busy,
-		"HTTP 401: Missing API key.":                                                   needsKey,
-		"timed out after 3m0s":                                                         slow,
-		"HTTP 500: boom":                                                               other,
+		"HTTP 429: Rate limit exceeded. Quota: 1 request per 15 seconds":                                   busy,
+		"HTTP 429: Too many requests, limit reached":                                                       busy,
+		"HTTP 429: You have exceeded your daily quota":                                                     quota,
+		"exit status 1: You have exhausted your daily quota on this model.":                                quota,
+		"exit status 1: Error: Free usage limit reached. Free models work in OpenCode":                     quota,
+		"empty output: Error: Out of Credits Add credits to keep using Amp.":                               quota,
+		"HTTP 503: This model is temporarily busy. Please try again shortly":                               busy,
+		"HTTP 401: Missing API key.":                                                                       needsKey,
+		"timed out after 3m0s":                                                                             slow,
+		`HTTP 402: {"error":{"code":"PAYMENT_METHOD_REQUIRED","message":"A payment method is required."}}`: paid,
+		"HTTP 500: boom": other,
 	} {
 		if got := classify(errors.New(msg)); got != want {
 			t.Errorf("%q classified as %d, want %d", msg, got, want)

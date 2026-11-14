@@ -1,0 +1,4 @@
+/gateway
+/survey/
+*.log
+.DS_Store

@@ -1,0 +1,34 @@
+{
+  "_comment": "Candidate providers for the phase 1 survey. Every entry is a guess from memory until `gateway probe` has passed it on betelgeuse: endpoints, flags and free allowances change often. Golden rule: free and keyless only (no API keys). tier: A = open HTTP endpoint, B = official CLI logged in with a free account, C = mailbox (the app connects to us as an MCP host; not probed), D = browser session in your own logged-in Chrome profile (probe checks reachability only).",
+  "prompt": "Reply with exactly one word: PONG",
+  "expect": "PONG",
+  "candidates": [
+    {"id": "pollinations", "tier": "A", "kind": "openai", "url": "https://text.pollinations.ai/openai", "model": "openai", "models_url": "https://text.pollinations.ai/models"},
+    {"id": "pollinations-get", "tier": "A", "kind": "get", "url": "https://text.pollinations.ai/{prompt}"},
+    {"id": "llm7", "tier": "A", "kind": "openai", "url": "https://api.llm7.io/v1/chat/completions", "model": "gpt-4o-mini", "models_url": "https://api.llm7.io/v1/models"},
+    {"id": "hf-spaces", "tier": "A", "kind": "reach", "url": "https://huggingface.co/api/spaces?limit=1", "note": "public Spaces expose a keyless Gradio API; each Space needs its own adapter"},
+    {"id": "duck-ai", "tier": "A", "kind": "reach", "url": "https://duck.ai", "note": "no official API; chat endpoint needs a per-session token, adapter comes later"},
+
+    {"id": "gemini-cli", "tier": "B", "kind": "cli", "bin": "gemini", "version_args": ["--version"], "ask_args": ["-p", "{prompt}"]},
+    {"id": "qwen-code", "tier": "B", "kind": "cli", "bin": "qwen", "version_args": ["--version"], "ask_args": ["-p", "{prompt}"]},
+    {"id": "copilot-cli", "tier": "B", "kind": "cli", "bin": "copilot", "version_args": ["--version"], "ask_args": ["-p", "{prompt}"]},
+    {"id": "opencode", "tier": "B", "kind": "cli", "bin": "opencode", "version_args": ["--version"], "ask_args": ["run", "{prompt}"]},
+    {"id": "codex-cli", "tier": "B", "kind": "cli", "bin": "codex", "version_args": ["--version"], "ask_args": ["exec", "{prompt}"]},
+
+    {"id": "muse-mailbox", "tier": "C", "kind": "none", "note": "Meta AI as MCP host; needs the mailbox and a tunnel (phase 5)"},
+    {"id": "perplexity-mailbox", "tier": "C", "kind": "none", "note": "Perplexity as MCP host (phase 5)"},
+
+    {"id": "muse-web", "tier": "D", "kind": "reach", "url": "https://www.meta.ai"},
+    {"id": "perplexity-web", "tier": "D", "kind": "reach", "url": "https://www.perplexity.ai"},
+    {"id": "chatgpt-web", "tier": "D", "kind": "reach", "url": "https://chatgpt.com"},
+    {"id": "gemini-web", "tier": "D", "kind": "reach", "url": "https://gemini.google.com"},
+    {"id": "copilot-web", "tier": "D", "kind": "reach", "url": "https://copilot.microsoft.com"},
+    {"id": "grok-web", "tier": "D", "kind": "reach", "url": "https://grok.com"},
+    {"id": "deepseek-web", "tier": "D", "kind": "reach", "url": "https://chat.deepseek.com"},
+    {"id": "lechat-web", "tier": "D", "kind": "reach", "url": "https://chat.mistral.ai"},
+    {"id": "kimi-web", "tier": "D", "kind": "reach", "url": "https://www.kimi.com"},
+    {"id": "qwen-web", "tier": "D", "kind": "reach", "url": "https://chat.qwen.ai"},
+    {"id": "zai-web", "tier": "D", "kind": "reach", "url": "https://chat.z.ai"},
+    {"id": "claude-web", "tier": "D", "kind": "reach", "url": "https://claude.ai"}
+  ]
+}

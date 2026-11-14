@@ -174,7 +174,11 @@ func (p *cli) Available() error {
 }
 
 func (p *cli) Models(context.Context) []string {
-	return order(p.cfg.DefaultModel, p.cfg.StaticModels, []string{"default"})
+	// "default" (the CLI's own choice, no model flag) is offered only when the entry names no model.
+	if ms := order(p.cfg.DefaultModel, p.cfg.StaticModels); len(ms) > 0 {
+		return ms
+	}
+	return []string{"default"}
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)

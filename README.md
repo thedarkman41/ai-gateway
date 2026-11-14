@@ -40,8 +40,8 @@ not written yet.
 | cloudflare | K | free API token and account id | answered |
 | cohere, zai | K | free API key | answered |
 | gemini-api | K | free API key | model names updated after the old one was refused as retired; not yet re-run |
-| openrouter | K | free API key | key stored but refused as missing; under investigation |
-| nvidia | K | free API key | timed out twice; under investigation |
+| openrouter | K | free API key | the key stored on betelgeuse was another provider's; not yet called with its own |
+| nvidia | K | free API key | answered |
 | sambanova | K | free API key | disabled: every model answered that a payment method is required |
 | mistral | K | free API key | disabled: its console requires a paid upgrade before a key can be created |
 

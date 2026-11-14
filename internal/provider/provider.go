@@ -227,7 +227,7 @@ func (p *openAI) Available() error {
 }
 
 // notChat matches model ids that are not chat models, for lists that do not say.
-var notChat = regexp.MustCompile(`(?i)whisper|embed|tts|guard|rerank|moderation|speech|transcri|bge-|ocr|image|video|audio`)
+var notChat = regexp.MustCompile(`(?i)whisper|embed|tts|guard|rerank|moderation|speech|transcri|bge-|ocr|image|video|audio|orpheus`)
 
 func (p *openAI) Models(ctx context.Context) []string {
 	p.mu.Lock()

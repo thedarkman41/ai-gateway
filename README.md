@@ -26,6 +26,7 @@ not written yet.
 | llm7 | A | OpenAI-compatible endpoint | answered earlier; only some of its listed models are keyless, and the gateway learns which |
 | opencode | B | `opencode run -m` | the adapter works; the account's free allowance was spent when checked |
 | freebuff | B | terminal session (it has no prompt flag) | answered, reply read correctly |
+| qwen-code, codex-cli, copilot-cli, amp, cursor-agent | B | each CLI's prompt flag | entries ready, flags from memory; each shows as unavailable until the CLI is installed and signed in |
 
 ## Build and check
 
@@ -59,6 +60,15 @@ A `tty` provider is the most fragile: the screen tells the gateway when a reply 
 ```bash
 ai-gateway try freebuff      # prints the final screen, then the reply extracted from it
 ```
+
+### Adding another tool
+
+Add one entry to `providers.json`; nothing in Bill changes.
+
+- The tool takes a prompt on its command line: `kind: cli` with `bin` and `ask_args` containing `{prompt}`.
+- It is interactive only: `kind: tty`, tuned with `ai-gateway try <id>` as freebuff was.
+
+Then `ai-gateway try <id>` to see it answer, and `ai-gateway check` to run them all.
 
 ## How it stays up
 

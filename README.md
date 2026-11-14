@@ -21,10 +21,10 @@ not written yet.
 
 | Provider | Tier | Route | On betelgeuse |
 |---|---|---|---|
-| gemini-cli | B | `gemini -p` | first check failed on the CLI's workspace-trust gate; now run with `GEMINI_CLI_TRUST_WORKSPACE=true`, not yet re-checked |
+| gemini-cli | B | `gemini -p` | failing: past the trust gate, now "Error generating content via API"; cause not yet known |
 | pollinations | A | OpenAI-compatible endpoint | answered |
-| llm7 | A | OpenAI-compatible endpoint | answered (a DeepSeek model; the first listed models were unavailable) |
-| opencode | B | `opencode run` | disabled: its default model there is the local bill-the-cat, so it needs a free hosted model set in `default_model` |
+| llm7 | A | OpenAI-compatible endpoint | answered (a DeepSeek model) |
+| opencode | B | `opencode run -m` | enabled with its free hosted models only; not yet checked |
 
 ## Build and check
 

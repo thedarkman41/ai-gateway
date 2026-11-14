@@ -188,14 +188,15 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 	if len(prompt) > 200_000 {
 		return "", errors.New("prompt is too long to pass to a CLI (200,000 characters)")
 	}
+	// The model flags go after the ask arguments: some CLIs (opencode) take them on the subcommand.
 	var args []string
+	for _, a := range p.cfg.AskArgs {
+		args = append(args, strings.ReplaceAll(a, "{prompt}", prompt))
+	}
 	if r.Model != "" && r.Model != "default" {
 		for _, a := range p.cfg.ModelArgs {
 			args = append(args, strings.ReplaceAll(a, "{model}", r.Model))
 		}
-	}
-	for _, a := range p.cfg.AskArgs {
-		args = append(args, strings.ReplaceAll(a, "{prompt}", prompt))
 	}
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, path, args...)

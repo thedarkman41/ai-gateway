@@ -72,7 +72,7 @@ func TestAskRoutingAndFallback(t *testing.T) {
 		{"id":"nocli","tier":"B","kind":"cli","bin":"no-such-binary-xyz","ask_args":["{prompt}"]},
 		{"id":"a","tier":"A","kind":"openai","url":"%s/chat","models_url":"%s/models"},
 		{"id":"b","tier":"A","kind":"openai","url":"%s/chat","default_model":"live"},
-		{"id":"echo","tier":"B","kind":"cli","bin":"echo","ask_args":["cli got: {prompt}"],"model_args":["-n"]},
+		{"id":"echo","tier":"B","kind":"cli","bin":"echo","ask_args":["cli got: {prompt}"],"model_args":["{model}"]},
 		{"id":"sh","tier":"B","kind":"cli","bin":"sh","ask_args":["-c","echo $(pwd) $TRUST # {prompt}"],"env":{"TRUST":"trusted"}},
 		{"id":"off","tier":"B","kind":"cli","bin":"echo","ask_args":["{prompt}"],"disabled":true}
 	]}`, sa.URL, sa.URL, sb.URL))
@@ -110,6 +110,11 @@ func TestAskRoutingAndFallback(t *testing.T) {
 	ans, err = g.Ask(ctx, "echo", "", "ping", "")
 	if err != nil || ans.Text != "cli got: ping" || ans.Used != "echo/default" {
 		t.Errorf("cli: %+v, %v", ans, err)
+	}
+
+	// A pinned CLI model is passed after the ask arguments.
+	if ans, err = g.Ask(ctx, "echo/-n", "", "ping", ""); err != nil || ans.Text != "cli got: ping -n" {
+		t.Errorf("cli model args: %+v, %v", ans, err)
 	}
 
 	// A CLI runs in the scratch directory with the entry's env, not in the caller's directory.

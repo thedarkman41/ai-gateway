@@ -4,6 +4,7 @@ package provider
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -339,10 +341,18 @@ func ChatText(body []byte) (string, bool) {
 }
 
 // ModelIDs reads a model list in either common shape: {"data":[{"id":..}]} or [{"id"|"name":..}].
+//
+// Where the list says so, it keeps only models a keyless caller can use for chat: an entry marked
+// usage_based_only (paid per token, so it wants an API key) or with a model_type other than chat is
+// left out. LLM7's list carries both fields. Entries that report their availability over the last
+// hour are ordered most available first.
 func ModelIDs(body []byte) []string {
 	type m struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID           string   `json:"id"`
+		Name         string   `json:"name"`
+		UsageOnly    bool     `json:"usage_based_only"`
+		ModelType    string   `json:"model_type"`
+		Availability *float64 `json:"availability_last_hour_percent"`
 	}
 	var wrapped struct {
 		Data []m `json:"data"`
@@ -353,6 +363,15 @@ func ModelIDs(body []byte) []string {
 	} else if json.Unmarshal(body, &list) != nil {
 		return nil
 	}
+	list = slices.DeleteFunc(list, func(x m) bool {
+		return x.UsageOnly || (x.ModelType != "" && x.ModelType != "chat")
+	})
+	slices.SortStableFunc(list, func(a, b m) int {
+		if a.Availability == nil || b.Availability == nil {
+			return 0
+		}
+		return cmp.Compare(*b.Availability, *a.Availability)
+	})
 	var ids []string
 	for _, x := range list {
 		if id := firstNonEmpty(x.ID, x.Name); id != "" {

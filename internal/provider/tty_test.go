@@ -56,3 +56,18 @@ func jsonString(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 	return `"` + r.Replace(s) + `"`
 }
+
+func TestModelIDsKeepsKeylessChatModels(t *testing.T) {
+	got := ModelIDs([]byte(`{"data":[
+		{"id":"flaky","model_type":"chat","usage_based_only":false,"availability_last_hour_percent":61.5},
+		{"id":"paid","model_type":"chat","usage_based_only":true,"availability_last_hour_percent":100},
+		{"id":"painter","model_type":"image","usage_based_only":false,"availability_last_hour_percent":99},
+		{"id":"steady","model_type":"chat","usage_based_only":false,"availability_last_hour_percent":98.2}]}`))
+	if strings.Join(got, ",") != "steady,flaky" {
+		t.Errorf("got %v, want [steady flaky]", got)
+	}
+	// A plain list without those fields is returned whole, in order.
+	if got := ModelIDs([]byte(`[{"name":"b"},{"id":"a"}]`)); strings.Join(got, ",") != "b,a" {
+		t.Errorf("plain list: %v", got)
+	}
+}

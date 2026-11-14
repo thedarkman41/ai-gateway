@@ -272,8 +272,8 @@ func TestMCPEndToEnd(t *testing.T) {
 	if v := got["1"]["result"].(map[string]any)["protocolVersion"]; v != "2025-06-18" {
 		t.Errorf("protocolVersion %v", v)
 	}
-	if n := len(got["2"]["result"].(map[string]any)["tools"].([]any)); n != 5 {
-		t.Errorf("%d tools, want 5", n)
+	if n := len(got["2"]["result"].(map[string]any)["tools"].([]any)); n != 7 {
+		t.Errorf("%d tools, want 7", n)
 	}
 	if s, isErr := text("3"); isErr || !strings.HasPrefix(s, "[answered by p/live]\n\nlive says: hello") {
 		t.Errorf("ask: %q %v", s, isErr)
@@ -413,99 +413,6 @@ func TestTimedOutModelRests(t *testing.T) {
 	}
 	if d := time.Since(start); d > 8*time.Second {
 		t.Errorf("took %s", d)
-	}
-}
-
-// TestDispatchAndCollect is the plan / fan-out / judge loop from the planner's side.
-func TestDispatchAndCollect(t *testing.T) {
-	f := &fake{}
-	srv := f.server(t)
-	cfg := fmt.Sprintf(`{"providers":[
-		{"id":"a","tier":"A","kind":"openai","url":"%[1]s/chat","default_model":"live"},
-		{"id":"b","tier":"A","kind":"openai","url":"%[1]s/chat","default_model":"slow"},
-		{"id":"bad","tier":"A","kind":"openai","url":"%[1]s/chat","default_model":"broken"}]}`, srv.URL)
-	ps, _ := provider.Parse([]byte(cfg))
-	dir := t.TempDir()
-	g := New(ps, OpenLedger(""))
-	g.SetJobsDir(dir)
-	ctx := context.Background()
-
-	// Three tasks spread over three providers; the one that lands on the broken provider is retried elsewhere.
-	id, plan, err := g.Dispatch([]Task{{ID: "parse", Prompt: "write the parser"}, {ID: "tests", Prompt: "write the tests"}, {ID: "docs", Prompt: "write the docs"}})
-	if err != nil || !strings.Contains(plan, "parse → a") || !strings.Contains(plan, "tests → b") || !strings.Contains(plan, "docs → bad") {
-		t.Fatalf("dispatch: %v\n%s", err, plan)
-	}
-	// Results arrive one at a time, fastest first, each with what is still to come.
-	var seen []string
-	for i := 0; i < 10; i++ {
-		out, err := g.Collect(ctx, id, 5*time.Second, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, task := range []string{"parse", "tests", "docs"} {
-			if strings.Contains(out, "### task "+task+", answered by") {
-				seen = append(seen, task)
-			}
-		}
-		if strings.Contains(out, "FAILED") {
-			t.Errorf("a task failed although another provider could take it:\n%s", out)
-		}
-		if strings.Contains(out, "is complete: all 3 results delivered") {
-			break
-		}
-	}
-	if len(seen) != 3 || seen[len(seen)-1] != "tests" {
-		t.Errorf("collected %v, want all three with the slow one last", seen)
-	}
-
-	// copies asks several providers the same task; a named model is honoured; nothing ready yet says so.
-	id, plan, err = g.Dispatch([]Task{{ID: "hard", Prompt: "p", Copies: 2}, {ID: "pinned", Prompt: "p", Models: []string{"b/slow"}}})
-	if err != nil || strings.Count(plan, "hard → ") != 2 || !strings.Contains(plan, "pinned → b/slow") {
-		t.Fatalf("copies: %v\n%s", err, plan)
-	}
-	if out, _ := g.Collect(ctx, id, 10*time.Second, 4); !strings.Contains(out, "### task hard") {
-		t.Errorf("first collect:\n%s", out)
-	}
-
-	// A gateway restarted mid-job (Bill stops an idle server) still hands out what had finished,
-	// and names what was lost.
-	id, _, _ = g.Dispatch([]Task{{ID: "quick", Prompt: "p", Models: []string{"a"}}, {ID: "long", Prompt: "p", Models: []string{"b/slow"}}})
-	time.Sleep(250 * time.Millisecond) // quick is done, long is not
-	g2 := New(ps, OpenLedger(""))
-	g2.SetJobsDir(dir)
-	out, err := g2.Collect(ctx, id, time.Second, 4)
-	if err != nil || !strings.Contains(out, "### task quick") || !strings.Contains(out, "Lost when the gateway restarted: long → b/slow") {
-		t.Errorf("after restart: %v\n%s", err, out)
-	}
-
-	// Bad input is refused with a usable message.
-	if _, _, err := g.Dispatch([]Task{{ID: "x", Prompt: "p"}, {ID: "x", Prompt: "q"}}); err == nil {
-		t.Error("duplicate task ids accepted")
-	}
-	if _, _, err := g.Dispatch([]Task{{ID: "x", Prompt: "p", Models: []string{"nope"}}}); err == nil || !strings.Contains(err.Error(), "unknown provider") {
-		t.Errorf("unknown model: %v", err)
-	}
-	if _, err := g.Collect(ctx, "../etc", time.Second, 1); err == nil {
-		t.Error("a path was accepted as a job id")
-	}
-}
-
-// A CLI provider runs one ask at a time even when a job sends it several.
-func TestCLIRunsOneAtATime(t *testing.T) {
-	dir := t.TempDir()
-	g := build(t, `{"providers":[{"id":"c","tier":"B","kind":"cli","bin":"sh",
-		"ask_args":["-c","if ! mkdir `+dir+`/lock 2>/dev/null; then echo OVERLAP; exit 0; fi; sleep 0.3; rmdir `+dir+`/lock; echo fine # {prompt}"]}]}`)
-	id, _, err := g.Dispatch([]Task{{ID: "1", Prompt: "p", Models: []string{"c"}}, {ID: "2", Prompt: "p", Models: []string{"c"}}, {ID: "3", Prompt: "p", Models: []string{"c"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var all string
-	for i := 0; i < 5 && !strings.Contains(all, "is complete"); i++ {
-		out, _ := g.Collect(context.Background(), id, 5*time.Second, 4)
-		all += out
-	}
-	if strings.Contains(all, "OVERLAP") || strings.Count(all, "fine") != 3 {
-		t.Errorf("runs overlapped or went missing:\n%s", all)
 	}
 }
 
@@ -695,5 +602,125 @@ func TestEmptyEnvValueRemovesTheVariable(t *testing.T) {
 		"ask_args":["-c","echo key=${AIGW_LEAKY_KEY-unset} added=$AIGW_ADDED # {prompt}"]}]}`)
 	if ans, err := g.Ask(context.Background(), "c", "", "x", ""); err != nil || ans.Text != "key=unset added=yes" {
 		t.Errorf("got %q, %v", ans.Text, err)
+	}
+}
+
+// agent is a scripted coding agent: it prints fixed code, optionally after a delay.
+func agent(id string, strength int, delay float64, code string) string {
+	b, _ := json.Marshal(map[string]any{"id": id, "tier": "B", "kind": "cli", "bin": "sh", "strength": strength, "preamble": "",
+		"ask_args": []string{"-c", fmt.Sprintf("sleep %v; cat <<'CODE'\n%s\nCODE", delay, code), "{prompt}"}})
+	return string(b)
+}
+
+func agents(list ...string) string { return `{"providers":[` + strings.Join(list, ",") + `]}` }
+
+// One function, five agents: the version most of them agree on wins, and agreement ignores
+// comments, docstrings, blank lines, spacing and Markdown wrapping.
+func TestConsensus(t *testing.T) {
+	plain := "def f(n):\n    return n + 1"
+	g := build(t, agents(
+		agent("weak", 1, 0, "def f(n): return n+1  # never asked: too weak"),
+		agent("top", 9, 0, plain),
+		agent("chatty", 8, 0, "Here you go:\n```python\ndef f(n):\n    # add one\n\n    return n  +  1\n```\nHope that helps!"),
+		agent("docs", 7, 0, "def f(n):\n    \"\"\"Add one.\"\"\"\n    return n + 1"),
+		agent("odd", 6, 0, "def f(n):\n    return 1 + n"),
+		agent("other", 5, 0, "f = lambda n: n + 1"),
+		`{"id":"down","tier":"B","kind":"cli","bin":"no-such-binary-xyz","strength":10,"ask_args":["{prompt}"]}`))
+	v, err := g.Consensus(context.Background(), "", "write f", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.Majority || v.Answers != 5 || strings.Join(v.Groups[0].By, ",") != "top,chatty,docs" || v.Winner() != plain {
+		t.Errorf("verdict: majority=%v answers=%d groups=%+v", v.Majority, v.Answers, v.Groups)
+	}
+	out := v.String()
+	if !strings.HasPrefix(out, "MAJORITY: 3 of 5 agents gave this answer (top, chatty, docs). Differed: odd, other.") || !strings.Contains(out, plain) || strings.Contains(out, "lambda") {
+		t.Errorf("text:\n%s", out)
+	}
+	// Who sided with the majority is kept, to show which agents to trust.
+	if e := g.ledger.Snapshot("odd", time.Now()); e.Votes != 1 || e.Agreed != 0 {
+		t.Errorf("odd's record: %+v", e)
+	}
+	if e := g.ledger.Snapshot("docs", time.Now()); e.Votes != 1 || e.Agreed != 1 {
+		t.Errorf("docs's record: %+v", e)
+	}
+
+	// No majority: every candidate comes back for the planner to choose, strongest group first.
+	g = build(t, agents(agent("a", 9, 0, "x = 1"), agent("b", 8, 0, "x = 2"), agent("c", 7, 0, "x = 3")))
+	v, _ = g.Consensus(context.Background(), "", "write x", 5)
+	if v.Majority || v.Winner() != "x = 1" || !strings.Contains(v.String(), "NO MAJORITY among 3 answers") || strings.Count(v.String(), "### candidate") != 3 {
+		t.Errorf("no majority:\n%s", v)
+	}
+
+	// A seat whose agent fails moves on to the next strongest, so five answers still come back.
+	g = build(t, agents(
+		`{"id":"broken","tier":"B","kind":"cli","bin":"sh","strength":10,"preamble":"","ask_args":["-c","exit 1","{prompt}"]}`,
+		agent("a", 9, 0, "y = 1"), agent("b", 8, 0, "y = 1"), agent("c", 7, 0, "y = 1"), agent("d", 6, 0, "y = 1"), agent("e", 5, 0, "y = 2")))
+	v, _ = g.Consensus(context.Background(), "", "write y", 5)
+	if v.Answers != 5 || !v.Majority || len(v.Failed) != 1 || !strings.HasPrefix(v.Failed[0], "broken:") {
+		t.Errorf("replacement: answers=%d majority=%v failed=%v", v.Answers, v.Majority, v.Failed)
+	}
+}
+
+// A program of several functions: agents pull tasks from one queue, the fast one writes more, a
+// task that fails goes back for another agent, and the parts come back as one program in task order.
+// Parts the planner rejects are rewritten by majority vote.
+func TestBuildQueueAndRework(t *testing.T) {
+	g := build(t, agents(
+		agent("fast", 9, 0.05, "def fast_part(): pass"),
+		agent("slow", 8, 1.2, "def slow_part(): pass"),
+		`{"id":"broken","tier":"B","kind":"cli","bin":"sh","strength":7,"preamble":"","ask_args":["-c","sleep 0.1; exit 1","{prompt}"]}`))
+	dir := t.TempDir()
+	g.SetJobsDir(dir)
+	ctx := context.Background()
+
+	var tasks []Task
+	for i := 1; i <= 6; i++ {
+		tasks = append(tasks, Task{ID: fmt.Sprintf("f%d", i), Prompt: "write it"})
+	}
+	id, plan, err := g.Build(tasks, "", "import os", "main()")
+	if err != nil || !strings.Contains(plan, "6 tasks in the queue, 3 agents taking them, strongest first: fast, slow, broken") {
+		t.Fatalf("build: %v\n%s", err, plan)
+	}
+	if out, _ := g.Collect(ctx, id, 50*time.Millisecond); !strings.Contains(out, "is still running") {
+		t.Errorf("early collect:\n%s", out)
+	}
+	out, err := g.Collect(ctx, id, 20*time.Second)
+	if err != nil || !strings.Contains(out, "is complete: 6 of 6 parts written") {
+		t.Fatalf("collect: %v\n%s", err, out)
+	}
+	fast, slow := strings.Count(out, ": fast/default"), strings.Count(out, ": slow/default")
+	if fast+slow != 6 || fast <= slow {
+		t.Errorf("fast wrote %d parts and slow %d; the fast agent should write more, and the broken agent's tasks should be redone", fast, slow)
+	}
+	program := out[strings.Index(out, "===== program =====\n")+len("===== program =====\n"):]
+	if !strings.HasPrefix(program, "import os\n\ndef ") || !strings.HasSuffix(strings.TrimSpace(program), "main()") || strings.Count(program, "def ") != 6 {
+		t.Errorf("program:\n%s", program)
+	}
+
+	// Rework: the rejected part is rewritten by vote, seeing the error and the old code.
+	if _, err := g.Rework(id, map[string]string{"nope": "x"}); err == nil || !strings.Contains(err.Error(), "f1, f2") {
+		t.Errorf("unknown task accepted: %v", err)
+	}
+	msg, err := g.Rework(id, map[string]string{"f2": "NameError: name 'q' is not defined"})
+	if err != nil || !strings.Contains(msg, "reworking 1 parts") {
+		t.Fatalf("rework: %v %s", err, msg)
+	}
+	out, _ = g.Collect(ctx, id, 20*time.Second)
+	if !strings.Contains(out, "is complete: 6 of 6") || !strings.Contains(out, "- f2: no majority among 2 answers; used the largest group, 1 (fast)") {
+		t.Errorf("after rework:\n%s", out)
+	}
+
+	// A gateway restarted afterwards (Bill stops an idle server) still has the program.
+	g2 := build(t, agents(agent("fast", 9, 0, "x")))
+	g2.SetJobsDir(dir)
+	if out, err := g2.Collect(ctx, id, time.Second); err != nil || !strings.Contains(out, "is complete: 6 of 6") {
+		t.Errorf("after restart: %v\n%s", err, out)
+	}
+	if _, err := g.Collect(ctx, "../etc", time.Second); err == nil {
+		t.Error("a path was accepted as a build id")
+	}
+	if _, _, err := g.Build([]Task{{ID: "x", Prompt: "p"}, {ID: "x", Prompt: "q"}}, "", "", ""); err == nil {
+		t.Error("duplicate task ids accepted")
 	}
 }

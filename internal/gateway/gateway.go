@@ -288,6 +288,13 @@ func (g *Gateway) Status(ctx context.Context) string {
 			quota = fmt.Sprintf("%d of %d calls today", e.Calls, cfg.DailyLimit)
 		}
 		fmt.Fprintf(&b, "\n%s (tier %s): %s; %s\n", cfg.ID, cfg.Tier, state, quota)
+		if cfg.Strength > 0 || e.Votes > 0 {
+			fmt.Fprintf(&b, "  strength %d", cfg.Strength)
+			if e.Votes > 0 {
+				fmt.Fprintf(&b, "; sided with the majority in %d of %d votes", e.Agreed, e.Votes)
+			}
+			b.WriteString("\n")
+		}
 		if rest := g.ledger.RestingModels(cfg.ID, g.now()); len(rest) > 0 {
 			fmt.Fprintf(&b, "  resting models: %s\n", strings.Join(rest, "; "))
 		}

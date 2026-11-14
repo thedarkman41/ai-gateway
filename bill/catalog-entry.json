@@ -15,13 +15,15 @@
   ],
   "trust": "community",
   "platform": "macos",
-  "notes": "Lets Bill ask other AI models through free, keyless routes. home is ~ because the vendor CLIs (gemini, opencode) read their login from your real home and the quota ledger lives in ~/.ai-gateway. pathDirs must include the directories that hold gemini and opencode (run `which gemini opencode`). ask, ask_many and dispatch send the prompt to third-party services; collect and list_models send nothing.",
+  "notes": "Lets Bill ask other AI models through free, keyless routes. home is ~ because the vendor CLIs (gemini, opencode) read their login from your real home and the quota ledger lives in ~/.ai-gateway. pathDirs must include the directories that hold gemini and opencode (run `which gemini opencode`). ask, ask_many, consensus, build and rework send the prompt to third-party services; collect and list_models send nothing.",
   "toolPolicy": {
     "list_models": "read",
     "collect": "read",
     "ask": "network-send",
     "ask_many": "network-send",
-    "dispatch": "network-send"
+    "consensus": "network-send",
+    "build": "network-send",
+    "rework": "network-send"
   },
   "timeoutSeconds": 600,
   "enabled": true

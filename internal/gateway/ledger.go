@@ -43,6 +43,8 @@ type Entry struct {
 	LastOK    time.Time        `json:"last_ok,omitzero"`
 	LastModel string           `json:"last_model,omitempty"` // the model that last answered
 	RestWhy   string           `json:"rest_why,omitempty"`   // why it is resting, when not the breaker
+	Votes     int              `json:"votes,omitempty"`      // votes it took part in that reached a majority
+	Agreed    int              `json:"agreed,omitempty"`     // of those, how often it sided with the majority
 	Models    map[string]Block `json:"resting_models,omitempty"`
 }
 
@@ -130,6 +132,18 @@ func (l *Ledger) Rest(id string, until time.Time, why string, now time.Time) {
 	defer l.mu.Unlock()
 	e := l.entry(id, now)
 	e.DownUntil, e.RestWhy, e.Fails = until, why, 0
+	l.save()
+}
+
+// Vote records whether a provider sided with the majority in a vote that reached one.
+func (l *Ledger) Vote(id string, agreed bool, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e := l.entry(id, now)
+	e.Votes++
+	if agreed {
+		e.Agreed++
+	}
 	l.save()
 }
 

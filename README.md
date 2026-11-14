@@ -60,8 +60,10 @@ ai-gateway models    # providers, state, calls today, model ids
 | `list_models` | Providers, whether each can be called now, calls used today, model ids |
 | `ask` | One question to one model. `model` is `auto` (default: first provider that answers), a provider id, or `provider/model`. `session` continues a conversation |
 | `ask_many` | The same question to 2 to 6 models at once, for comparison |
-| `dispatch` | Fan-out: up to 12 independent tasks handed to the free providers at once; returns a job id immediately |
-| `collect` | The next finished result of a job, with what is still running |
+| `consensus` | One function, written independently by the five strongest free agents; returns the version the majority agrees on |
+| `build` | A program of several functions: one task each, in a queue the free agents pull from; returns a build id |
+| `collect` | Waits for a build and returns the whole program, assembled in task order, with who wrote each part |
+| `rework` | Sends the functions that failed the planner's check back through a majority vote, with the error |
 
 ## One interface for every provider
 
@@ -89,30 +91,41 @@ Add one entry to `providers.json`; nothing in Bill changes.
 
 Then `ai-gateway try <id>` to see it answer, and `ai-gateway check` to run them all.
 
-## Plan, fan out, judge
+## How code gets written
 
-For a large coding task, Bill plans and judges and the other models do the parts:
+There is no fixed order of providers for coding work. Bill plans and checks; the gateway decides who writes.
 
-1. **Plan.** Bill splits the work into independent, self-contained tasks.
-2. **Fan out.** One `dispatch` call hands them all over. The gateway spreads tasks across whichever providers are
-   free (not resting, not out of quota), runs a CLI one task at a time, and retries a failed task on up to two other
-   providers. `copies: 2` on a task gets rival answers from two providers.
-3. **Judge.** `collect` returns results one at a time as they finish, so each is judged (and built or tested) before
-   the next arrives and none floods Bill's context.
+**One function: a vote.** `consensus` gives the function to the five strongest agents that are free. Each writes it
+independently. Answers are compared as code: comments, docstrings, blank lines, spacing and Markdown wrapping are set
+aside. If more than half agree, that version is returned. If not, every distinct candidate comes back and Bill
+chooses by checking them. A seat whose agent fails moves on to the next strongest, so five answers still come back.
 
-Workers only ever see the prompt text: they do not touch the repository, and Bill applies what it accepts.
-[`bill/fan-out.md`](bill/fan-out.md) is the skill that teaches Bill this loop; copy it to `billcat-skills/agent/`.
+**A program: a greedy queue.** `build` takes one task per function. Every free agent takes a task from the queue,
+strongest first, and takes another the moment it finishes, so faster agents write more of the program. A task that
+fails goes back to the front of the queue for a different agent; an agent that fails twice running leaves. `collect`
+returns the parts as one program, in task order, between the header and footer Bill supplied.
 
-To run the same loop from a terminal, without Bill:
+**Check, then rework.** Bill compiles and tests the program. Each function that fails goes to `rework` with its
+error: it is rewritten by the same five-agent vote, with the error and the rejected code in the prompt, and the
+winner replaces it. Then Bill collects and checks again.
+
+**Strength.** `strength` in `providers.json` (1 to 10) ranks the agents. It is a starting judgment, meant to be
+edited: `ai-gateway models` shows how often each agent has sided with the majority.
+
+Agents only ever see prompt text; they never touch the repository. [`bill/fan-out.md`](bill/fan-out.md) is the skill
+that teaches Bill this; copy it to `billcat-skills/agent/`.
+
+From a terminal, without Bill:
 
 ```bash
-ai-gateway fanout "Write a Python function that parses ISO dates." "Write pytest tests for an ISO date parser."
-ai-gateway fanout -all "Write a Python function is_prime(n). Reply with only the code."   # every free provider, to compare
+ai-gateway consensus "Write a Python function is_prime(n)."
+ai-gateway build -header "import re" "Write a Python function slugify(s)." "Write a Python function word_count(s)." "Write a Python function is_palindrome(s)."
+ai-gateway build -fail task2 "..." "..."      # also sends task2 through rework, as if it had failed to compile
 ```
 
-Finished results are saved under `~/.ai-gateway/jobs/`, so they survive Bill stopping an idle gateway (after five
-minutes without a call). Tasks still running at that moment are lost and reported as such; running the gateway as an
-HTTP service (`serve -http`) avoids that.
+A build is saved under `~/.ai-gateway/jobs/` as it goes, so the finished parts survive Bill stopping an idle gateway
+(after five minutes without a call). Parts not yet written at that moment are reported as missing and can be
+reworked; running the gateway as an HTTP service (`serve -http`) avoids that.
 
 ## Replies are normalised
 

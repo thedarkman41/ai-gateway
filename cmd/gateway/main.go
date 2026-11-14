@@ -35,10 +35,10 @@ const usage = `usage: gateway <command> [flags]
   key      key list | key set <provider> | key remove <provider>: free API keys, kept in a private
            file in the state directory, never in the config or the repository
   reset    reset [provider]: clear the rests on one provider, or on all of them
-  fanout   fanout [-all] <prompt>...: run the dispatch/collect loop from the terminal. Each prompt is
-           a task spread over the free providers; -all sends one prompt to every free provider
-  ask      ask <model> [prompt]: one question through the gateway's own routing, as Bill's ask tool
-           does: model fallback, rests and retries included
+  consensus  consensus [-agents n] <prompt>: one function written by the strongest free agents;
+             prints the version the majority agrees on
+  build      build [-fail ids] <prompt>...: a program of several functions through the greedy queue;
+             prints the assembled program
   try      try <provider> [prompt]: one ask straight to a provider, disabled ones included;
            for a terminal-driven provider it also prints the screen the reply was read from
   probe    survey the candidate providers (providers/candidates.json)
@@ -122,8 +122,10 @@ func main() {
 		fmt.Printf("[answered by %s]\n\n%s\n", ans.Used, ans.Text)
 	case "key":
 		runKey(os.Args[2:])
-	case "fanout":
-		runFanout(ctx, os.Args[2:])
+	case "consensus":
+		runConsensus(ctx, os.Args[2:])
+	case "build":
+		runBuild(ctx, os.Args[2:])
 	case "probe":
 		runProbe(ctx, os.Args[2:])
 	default:
@@ -218,44 +220,66 @@ func runTry(ctx context.Context, args []string) {
 	log.Fatalf("no provider %q in the %s list", fs.Arg(0), from)
 }
 
-// runFanout drives a real job from the terminal the way Bill would: dispatch, then collect results
-// one at a time as they finish.
-func runFanout(ctx context.Context, args []string) {
-	fs := flag.NewFlagSet("fanout", flag.ExitOnError)
-	all := fs.Bool("all", false, "send the one prompt to every free provider, to compare them")
+// runConsensus runs one vote from the terminal: the strongest free agents each write the function.
+func runConsensus(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("consensus", flag.ExitOnError)
+	n := fs.Int("agents", 0, "how many agents vote (default 5)")
 	g := open(fs, args)
-	prompts := fs.Args()
-	if len(prompts) == 0 || (*all && len(prompts) != 1) {
-		log.Fatal("usage: gateway fanout <prompt>...   or   gateway fanout -all <prompt>")
-	}
-	var tasks []gateway.Task
-	if *all {
-		for _, id := range g.Free() {
-			tasks = append(tasks, gateway.Task{ID: id, Prompt: prompts[0], Models: []string{id}})
-		}
-		if len(tasks) == 0 {
-			log.Fatal("no provider is free right now; see `gateway models`")
-		}
-	} else {
-		for i, p := range prompts {
-			tasks = append(tasks, gateway.Task{ID: fmt.Sprintf("task%d", i+1), Prompt: p})
-		}
+	if fs.NArg() != 1 {
+		log.Fatal("usage: gateway consensus [-agents n] <prompt>")
 	}
 	start := time.Now()
-	id, plan, err := g.Dispatch(tasks)
+	v, err := g.Consensus(ctx, "", fs.Arg(0), *n)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s\n[%.0fs]\n", v, time.Since(start).Seconds())
+}
+
+// runBuild runs a build from the terminal the way Bill would: each prompt is a task in the queue;
+// when the program comes back, -fail sends named parts through rework to show that path.
+func runBuild(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("build", flag.ExitOnError)
+	header := fs.String("header", "", "code placed before the functions")
+	fail := fs.String("fail", "", "comma-separated task ids to send through rework afterwards, as if they had failed to compile")
+	g := open(fs, args)
+	if fs.NArg() == 0 {
+		log.Fatal("usage: gateway build [-header code] [-fail task1,task3] <prompt>...   (tasks are named task1, task2, ...)")
+	}
+	var tasks []gateway.Task
+	for i, p := range fs.Args() {
+		tasks = append(tasks, gateway.Task{ID: fmt.Sprintf("task%d", i+1), Prompt: p})
+	}
+	start := time.Now()
+	id, plan, err := g.Build(tasks, "", *header, "")
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("%s\n\n", plan)
-	for {
-		out, err := g.Collect(ctx, id, 4*time.Minute, 1)
+	wait := func() {
+		for {
+			out, err := g.Collect(ctx, id, 20*time.Second)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("[%3.0fs] %s\n\n", time.Since(start).Seconds(), out)
+			if !strings.Contains(out, "is still running") {
+				return
+			}
+		}
+	}
+	wait()
+	if *fail != "" {
+		failed := map[string]string{}
+		for _, t := range strings.Split(*fail, ",") {
+			failed[strings.TrimSpace(t)] = "SyntaxError: invalid syntax (simulated by -fail)"
+		}
+		out, err := g.Rework(id, failed)
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("[%3.0fs] %s\n\n", time.Since(start).Seconds(), out)
-		if strings.Contains(out, "is complete") || strings.Contains(out, "Lost when") {
-			return
-		}
+		fmt.Printf("%s\n\n", out)
+		wait()
 	}
 }
 

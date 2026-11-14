@@ -46,7 +46,8 @@ type Provider interface {
 type Config struct {
 	ID           string            `json:"id"`
 	Tier         string            `json:"tier"`
-	Kind         string            `json:"kind"` // openai | cli | tty
+	Strength     int               `json:"strength,omitempty"` // how good its code is, 1 to 10: votes and queues go to the strongest free agents first
+	Kind         string            `json:"kind"`               // openai | cli | tty
 	URL          string            `json:"url,omitempty"`
 	ModelsURL    string            `json:"models_url,omitempty"`
 	DefaultModel string            `json:"default_model,omitempty"`

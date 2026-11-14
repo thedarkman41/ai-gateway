@@ -97,20 +97,42 @@ func (g *Gateway) Tools() []mcp.Tool {
 			},
 		},
 		{
-			Name: "dispatch",
-			Description: fmt.Sprintf("Fan a plan out: hand up to %d tasks to other AI models at once and get a job id back immediately. "+
-				"The gateway spreads the tasks over whichever providers are free and retries a failed task on another. "+
-				"Each prompt goes to a free third-party service and must be self-contained: the worker sees nothing but that prompt, "+
-				"so include the code and context it needs. Then call collect with the job id.", maxTasks),
+			Name: "consensus",
+			Description: fmt.Sprintf("For ONE function: have the %d strongest free agents each write it independently, and return the version most of them agree on. "+
+				"With no majority it returns the distinct candidates for you to choose between. The prompt goes to third-party services and must be "+
+				"self-contained: give the exact signature, the language, and any code the function must call.", defaultVoters),
+			InputSchema: map[string]any{"type": "object", "required": []string{"prompt"}, "properties": map[string]any{
+				"prompt": str("The function to write, self-contained: signature, language, behaviour."),
+				"system": str("Optional instructions for the agents."),
+				"agents": map[string]any{"type": "integer", "description": fmt.Sprintf("How many agents vote (default %d, at most %d).", defaultVoters, maxVoters)},
+			}},
+			Annotations: map[string]any{"readOnlyHint": false, "openWorldHint": true},
+			Handler: func(ctx context.Context, a map[string]any) (string, error) {
+				n, _ := a["agents"].(float64)
+				ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+				defer cancel()
+				v, err := g.Consensus(ctx, arg(a, "system"), arg(a, "prompt"), int(n))
+				if err != nil {
+					return "", err
+				}
+				return v.String(), nil
+			},
+		},
+		{
+			Name: "build",
+			Description: fmt.Sprintf("For a program of SEVERAL functions: put up to %d tasks, one function each, in a queue. Every free agent takes a task and takes "+
+				"another when it finishes, so faster agents write more. Returns a build id at once; call collect for the assembled program. "+
+				"Each prompt goes to a third-party service and must be self-contained: the agent sees only that prompt. Decide the "+
+				"signatures yourself and state them in every task that defines or calls them, so the parts fit.", maxTasks),
 			InputSchema: map[string]any{"type": "object", "required": []string{"tasks"}, "properties": map[string]any{
-				"tasks": map[string]any{"type": "array", "description": "The tasks, independent of each other.", "items": map[string]any{
+				"tasks": map[string]any{"type": "array", "description": "One task per function, in the order the code should appear in the program.", "items": map[string]any{
 					"type": "object", "required": []string{"id", "prompt"}, "properties": map[string]any{
-						"id":     str("Short name for the task, unique in the job."),
-						"prompt": str("The whole task, self-contained."),
-						"system": str("Optional instructions for the worker."),
-						"copies": map[string]any{"type": "integer", "description": fmt.Sprintf("How many different providers answer this task, 1 to %d (default 1). More than 1 gives rival answers to judge between; use it only for the hard tasks.", maxCopies)},
-						"models": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional: name who answers (provider ids or provider/model). Leave out to let the gateway choose."},
+						"id":     str("The function's name, unique in the build."),
+						"prompt": str("The function to write, self-contained: signature, language, behaviour, and the signatures of anything it calls."),
 					}}},
+				"header": str("Optional code placed before the functions: imports, constants, shared types."),
+				"footer": str("Optional code placed after the functions: the main block."),
+				"system": str("Optional instructions for every agent, such as the language and style."),
 			}},
 			Annotations: map[string]any{"readOnlyHint": false, "openWorldHint": true},
 			Handler: func(_ context.Context, a map[string]any) (string, error) {
@@ -119,27 +141,51 @@ func (g *Gateway) Tools() []mcp.Tool {
 				if err := json.Unmarshal(raw, &tasks); err != nil {
 					return "", fmt.Errorf("tasks must be a list of {id, prompt}: %v", err)
 				}
-				_, plan, err := g.Dispatch(tasks)
+				_, plan, err := g.Build(tasks, arg(a, "system"), arg(a, "header"), arg(a, "footer"))
 				return plan, err
 			},
 		},
 		{
 			Name: "collect",
-			Description: "Get results of a dispatched job as they finish. Returns the next result not yet collected (waiting up to wait_seconds for one) " +
-				"and says how many are still running. Judge each result when it arrives, then call collect again until the job is complete.",
-			InputSchema: map[string]any{"type": "object", "required": []string{"job"}, "properties": map[string]any{
-				"job":          str("The job id dispatch returned."),
-				"wait_seconds": map[string]any{"type": "integer", "description": "How long to wait for a result when none is ready (default 60, at most 240)."},
-				"max_results":  map[string]any{"type": "integer", "description": "How many results to return at once (default 1, at most 4)."},
+			Description: "Wait for a build (or its rework) to finish and get the whole program, assembled in task order, with who wrote each part. " +
+				"While it is still running this returns the progress: call it again. Then check the program yourself: compile it, run its tests.",
+			InputSchema: map[string]any{"type": "object", "required": []string{"build"}, "properties": map[string]any{
+				"build":        str("The build id that build returned."),
+				"wait_seconds": map[string]any{"type": "integer", "description": "How long to wait for it to finish (default 120, at most 240)."},
 			}},
 			Annotations: map[string]any{"readOnlyHint": true, "openWorldHint": false},
 			Handler: func(ctx context.Context, a map[string]any) (string, error) {
 				wait, _ := a["wait_seconds"].(float64)
 				if wait <= 0 {
-					wait = 60
+					wait = 120
 				}
-				n, _ := a["max_results"].(float64)
-				return g.Collect(ctx, arg(a, "job"), time.Duration(min(wait, 240))*time.Second, int(min(max(n, 1), 4)))
+				return g.Collect(ctx, arg(a, "build"), time.Duration(min(wait, 240))*time.Second)
+			},
+		},
+		{
+			Name: "rework",
+			Description: fmt.Sprintf("After checking a build: send back the functions that failed. Each is rewritten by a vote of the %d strongest free agents, "+
+				"who see the error and the rejected code, and the majority's version replaces it. Then call collect for the program again.", defaultVoters),
+			InputSchema: map[string]any{"type": "object", "required": []string{"build", "failed"}, "properties": map[string]any{
+				"build": str("The build id."),
+				"failed": map[string]any{"type": "array", "description": "The parts that failed your check.", "items": map[string]any{
+					"type": "object", "required": []string{"id", "error"}, "properties": map[string]any{
+						"id":    str("The task id of the function that failed."),
+						"error": str("The compiler or test output that shows what is wrong."),
+					}}},
+			}},
+			Annotations: map[string]any{"readOnlyHint": false, "openWorldHint": true},
+			Handler: func(_ context.Context, a map[string]any) (string, error) {
+				raw, _ := json.Marshal(a["failed"])
+				var list []struct{ ID, Error string }
+				if err := json.Unmarshal(raw, &list); err != nil || len(list) == 0 {
+					return "", errors.New("failed must be a list of {id, error}")
+				}
+				failed := map[string]string{}
+				for _, f := range list {
+					failed[strings.TrimSpace(f.ID)] = f.Error
+				}
+				return g.Rework(arg(a, "build"), failed)
 			},
 		},
 	}

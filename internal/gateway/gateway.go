@@ -143,6 +143,11 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 			// Learn from the failure, so the next ask does not repeat it.
 			switch classify(err) {
 			case needsKey: // not a keyless model: leave it out, and do not count it as a real try
+				if p.Config().KeyEnv != "" && !p.Config().KeyOptional { // our key, not a keyless model, was refused
+					g.ledger.Rest(id, g.now().Add(time.Hour), "the API key was refused ("+provider.Short(err.Error())+")", g.now())
+					rested = true
+					break
+				}
 				g.ledger.BlockModel(id, m, g.now().Add(keyedModelRest), "needs an API key", g.now())
 				continue
 			case quota:

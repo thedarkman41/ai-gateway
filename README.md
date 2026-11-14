@@ -2,13 +2,15 @@
 
 A local MCP server that gives Bill the Cat (or any MCP client) access to other AI models.
 
-**Golden rule: free and keyless.** No provider here may need an API key. Access comes through four tiers:
+**Golden rule: free.** No provider may cost money or need a payment card. Most need no API key at all; a free API key is allowed where a provider offers a free tier that way. Access comes through these tiers:
 
 | Tier | How it connects |
 |---|---|
 | A | Open HTTP endpoints, no account |
 | B | The vendor's own CLI, logged in with a free account, run headless |
 | C | Mailbox: a chat app connects to the gateway as an MCP host and pulls queued questions |
+| K | A free API key on an OpenAI-compatible endpoint |
+| L | A model on your own machines |
 | D | Browser session: the gateway drives the web UI in your own logged-in Chrome profile |
 
 Limits on tier D: your own accounts, at a human pace. No CAPTCHA or bot-detection defeat, no account
@@ -31,7 +33,9 @@ not written yet.
 | codex-cli | B | `codex exec` | answered |
 | cursor-agent | B | `cursor-agent -p --trust` | answered |
 | amp | B | `amp -x` | disabled: execute mode uses paid credits only |
-| rigel-coder | L (local) | Loadout endpoint on rigel | entry added from Bill's own config; not yet called from the gateway |
+| rigel-coder | L | Loadout endpoint on rigel | answered |
+| kilo, ovh | A | keyless endpoints | entries added from a public list of free APIs; not yet called |
+| groq, gemini-api, openrouter, nvidia, cohere, zai | K | free API key | entries added from the same list; each is skipped until its key is set |
 
 ## Build and check
 
@@ -107,6 +111,19 @@ HTTP service (`serve -http`) avoids that.
 A reply that is nothing but one fenced code block (` ```python ... ``` `) comes back as the bare code, so every
 provider answers a "reply with only the code" task the same way. A reply with prose around its code, or several
 blocks, keeps its fences. A reply that stops inside a code block, or that the provider marks as cut at its output limit, counts as a failure and is retried on the next model or provider.
+
+## Free API keys
+
+Some providers give a free tier through an API key. The gateway skips them until their key is set.
+
+```bash
+ai-gateway key list            # which providers take a key, which are set, where to create one
+ai-gateway key set groq        # paste the key; input is hidden
+ai-gateway try groq
+```
+
+Keys are stored in `~/.ai-gateway/keys.json`, readable only by you, or read from the variable named in the entry's
+`key_env`. They are never in `providers.json` or this repository, and a provider's error text is scrubbed of the key.
 
 ## How it stays up
 

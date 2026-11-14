@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/thedarkman41/ai-gateway/internal/probe"
 	"github.com/thedarkman41/ai-gateway/internal/provider"
 	"github.com/thedarkman41/ai-gateway/providers"
+	"golang.org/x/term"
 )
 
 const version = "0.2.0"
@@ -29,6 +31,8 @@ const usage = `usage: gateway <command> [flags]
   serve    run the MCP server on stdio, or on HTTP with -http 127.0.0.1:8765
   check    send a test prompt through every configured provider
   models   print the providers, their state and their models
+  key      key list | key set <provider> | key remove <provider>: free API keys, kept in a private
+           file in the state directory, never in the config or the repository
   reset    reset [provider]: clear the rests on one provider, or on all of them
   fanout   fanout [-all] <prompt>...: run the dispatch/collect loop from the terminal. Each prompt is
            a task spread over the free providers; -all sends one prompt to every free provider
@@ -98,6 +102,8 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Print(g.Status(ctx))
+	case "key":
+		runKey(os.Args[2:])
 	case "fanout":
 		runFanout(ctx, os.Args[2:])
 	case "probe":
@@ -137,6 +143,14 @@ func config(fs *flag.FlagSet, args []string) (data []byte, from, state string) {
 		data, from = b, path
 	} else if *file != "" {
 		log.Fatal(err)
+	}
+	// A provider's free API key comes from its environment variable, else from the private key file.
+	keys := filepath.Join(*dir, "keys.json")
+	provider.KeyLookup = func(id, env string) string {
+		if v := os.Getenv(env); v != "" {
+			return v
+		}
+		return readKeys(keys)[id]
 	}
 	return data, from, *dir
 }
@@ -224,6 +238,94 @@ func runFanout(ctx context.Context, args []string) {
 		if strings.Contains(out, "is complete") || strings.Contains(out, "Lost when") {
 			return
 		}
+	}
+}
+
+func readKeys(path string) map[string]string {
+	keys := map[string]string{}
+	if b, err := os.ReadFile(path); err == nil {
+		json.Unmarshal(b, &keys)
+	}
+	return keys
+}
+
+// runKey manages the free API keys some providers need. A key is typed into the terminal with the
+// input hidden and stored in <state>/keys.json, readable only by the user.
+func runKey(args []string) {
+	fs := flag.NewFlagSet("key", flag.ExitOnError)
+	data, from, state := config(fs, args)
+	ps, err := provider.ParseAll(data)
+	if err != nil {
+		log.Fatalf("%s providers: %v", from, err)
+	}
+	path := filepath.Join(state, "keys.json")
+	keys := readKeys(path)
+	find := func(id string) provider.Config {
+		for _, p := range ps {
+			if c := p.Config(); c.ID == id && c.KeyEnv != "" {
+				return c
+			}
+		}
+		log.Fatalf("%q is not a provider that takes a key; see `gateway key list`", id)
+		return provider.Config{}
+	}
+	save := func() {
+		b, _ := json.MarshalIndent(keys, "", "  ")
+		if err := os.MkdirAll(state, 0o700); err != nil {
+			log.Fatal(err)
+		}
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			log.Fatal(err)
+		}
+		os.Chmod(path, 0o600)
+	}
+	switch {
+	case fs.NArg() == 1 && fs.Arg(0) == "list":
+		fmt.Println("| Provider | Key | Where to create one |\n|---|---|---|")
+		for _, p := range ps {
+			c := p.Config()
+			if c.KeyEnv == "" {
+				continue
+			}
+			state := "not set"
+			switch {
+			case os.Getenv(c.KeyEnv) != "":
+				state = "set (in $" + c.KeyEnv + ")"
+			case keys[c.ID] != "":
+				state = "set"
+			case c.KeyOptional:
+				state = "not set (optional: works without, higher limits with)"
+			}
+			fmt.Printf("| %s | %s | %s |\n", c.ID, state, c.KeyURL)
+		}
+	case fs.NArg() == 2 && fs.Arg(0) == "set":
+		c := find(fs.Arg(1))
+		var key string
+		if term.IsTerminal(int(os.Stdin.Fd())) {
+			fmt.Printf("Create a free key at %s\nPaste the %s key (input is hidden): ", c.KeyURL, c.ID)
+			b, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Println()
+			if err != nil {
+				log.Fatal(err)
+			}
+			key = string(b)
+		} else {
+			b, _ := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+			key = string(b)
+		}
+		if key = strings.TrimSpace(key); key == "" {
+			log.Fatal("no key entered; nothing changed")
+		}
+		keys[c.ID] = key
+		save()
+		fmt.Printf("saved the %s key (%d characters) to %s\ntest it with: ai-gateway try %s\n", c.ID, len(key), path, c.ID)
+	case fs.NArg() == 2 && fs.Arg(0) == "remove":
+		c := find(fs.Arg(1))
+		delete(keys, c.ID)
+		save()
+		fmt.Printf("removed the %s key\n", c.ID)
+	default:
+		log.Fatal("usage: gateway key list | key set <provider> | key remove <provider>")
 	}
 }
 

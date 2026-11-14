@@ -36,6 +36,11 @@ func (f *fake) server(t *testing.T) *httptest.Server {
 		var body map[string]any
 		b, _ := io.ReadAll(r.Body)
 		json.Unmarshal(b, &body)
+		body["auth"] = r.Header.Get("Authorization")
+		if m, _ := body["model"].(string); m == "echoauth" {
+			http.Error(w, "bad request from "+r.Header.Get("Authorization"), 400)
+			return
+		}
 		f.mu.Lock()
 		f.calls = append(f.calls, body)
 		down := f.down
@@ -623,5 +628,38 @@ func TestCutOffReplyIsRetried(t *testing.T) {
 	}
 	if cutOff("Use ` for inline and ``` for blocks.\n```py\nx\n```") {
 		t.Error("a fence mentioned mid-line was counted")
+	}
+}
+
+// A provider that needs a free API key is skipped until the key is set, sends it as a bearer token,
+// never lets it leak into an error, and uses only the models its filter allows.
+func TestKeyedProvider(t *testing.T) {
+	f := &fake{}
+	srv := f.server(t)
+	g := build(t, fmt.Sprintf(`{"providers":[
+		{"id":"k","tier":"K","kind":"openai","url":"%[1]s/chat","models_url":"%[1]s/models","model_filter":"^(live|other)$","key_env":"AIGW_TEST_KEY"},
+		{"id":"opt","tier":"A","kind":"openai","url":"%[1]s/chat","default_model":"live","key_env":"AIGW_TEST_KEY","key_optional":true}]}`, srv.URL))
+	ctx := context.Background()
+
+	if _, err := g.Ask(ctx, "k", "", "hi", ""); err == nil || !strings.Contains(err.Error(), "ai-gateway key set k") || f.count() != 0 {
+		t.Errorf("without a key: %v, %d calls", err, f.count())
+	}
+	if free := g.Free(); len(free) != 1 || free[0] != "opt" {
+		t.Errorf("free without a key: %v", free)
+	}
+	if _, err := g.Ask(ctx, "opt", "", "hi", ""); err != nil || f.calls[0]["auth"] != "" {
+		t.Errorf("optional key, unset: %v, auth %q", err, f.calls[0]["auth"])
+	}
+
+	t.Setenv("AIGW_TEST_KEY", "sekret-123")
+	ans, err := g.Ask(ctx, "k", "", "hi", "")
+	if err != nil || ans.Used != "k/live" { // "dead" is listed first but the filter leaves it out
+		t.Fatalf("with a key: %+v, %v", ans, err)
+	}
+	if got := f.calls[len(f.calls)-1]["auth"]; got != "Bearer sekret-123" {
+		t.Errorf("Authorization %q", got)
+	}
+	if _, err := g.Ask(ctx, "k/echoauth", "", "hi", ""); err == nil || strings.Contains(err.Error(), "sekret-123") || !strings.Contains(err.Error(), "[key]") {
+		t.Errorf("the key leaked into an error: %v", err)
 	}
 }

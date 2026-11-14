@@ -51,6 +51,10 @@ type Config struct {
 	ModelsURL    string            `json:"models_url,omitempty"`
 	DefaultModel string            `json:"default_model,omitempty"`
 	StaticModels []string          `json:"models,omitempty"`
+	ModelFilter  string            `json:"model_filter,omitempty"` // regex: only listed models matching it are used (a provider's free ones)
+	KeyEnv       string            `json:"key_env,omitempty"`      // the provider needs a free API key: the environment variable that may hold it (else the key file)
+	KeyOptional  bool              `json:"key_optional,omitempty"` // works without the key; with one, limits are higher
+	KeyURL       string            `json:"key_url,omitempty"`      // where to create the key
 	Bin          string            `json:"bin,omitempty"`
 	AskArgs      []string          `json:"ask_args,omitempty"`
 	ModelArgs    []string          `json:"model_args,omitempty"`
@@ -127,7 +131,15 @@ func parse(data []byte, all bool) ([]Provider, error) {
 			if c.URL == "" {
 				return nil, fmt.Errorf("%s: url is required", c.ID)
 			}
-			out = append(out, &openAI{cfg: c, client: &http.Client{}})
+			p := &openAI{cfg: c, client: &http.Client{}}
+			if c.ModelFilter != "" {
+				re, err := regexp.Compile(c.ModelFilter)
+				if err != nil {
+					return nil, fmt.Errorf("%s: model_filter: %w", c.ID, err)
+				}
+				p.filter = re
+			}
+			out = append(out, p)
 		case "cli":
 			if c.Bin == "" || !hasPrompt(c.AskArgs) {
 				return nil, fmt.Errorf("%s: bin and ask_args with {prompt} are required", c.ID)
@@ -175,13 +187,35 @@ type openAI struct {
 	cfg    Config
 	client *http.Client
 
+	filter *regexp.Regexp
+
 	mu      sync.Mutex
 	models  []string
 	fetched time.Time
 }
 
-func (p *openAI) Config() Config   { return p.cfg }
-func (p *openAI) Available() error { return nil }
+func (p *openAI) Config() Config { return p.cfg }
+
+// KeyLookup finds a provider's API key. The default reads only the environment variable; the
+// gateway command replaces it with one that also reads the key file. Keys are never in config.
+var KeyLookup = func(id, env string) string { return os.Getenv(env) }
+
+func (p *openAI) key() string {
+	if p.cfg.KeyEnv == "" {
+		return ""
+	}
+	return strings.TrimSpace(KeyLookup(p.cfg.ID, p.cfg.KeyEnv))
+}
+
+func (p *openAI) Available() error {
+	if p.cfg.KeyEnv != "" && !p.cfg.KeyOptional && p.key() == "" {
+		return fmt.Errorf("no API key set (run: ai-gateway key set %s)", p.cfg.ID)
+	}
+	return nil
+}
+
+// notChat matches model ids that are not chat models, for lists that do not say.
+var notChat = regexp.MustCompile(`(?i)whisper|embed|tts|guard|rerank|moderation|speech|transcri|bge-|ocr|image|video|audio`)
 
 func (p *openAI) Models(ctx context.Context) []string {
 	p.mu.Lock()
@@ -189,8 +223,11 @@ func (p *openAI) Models(ctx context.Context) []string {
 	if p.cfg.ModelsURL != "" && time.Since(p.fetched) > 10*time.Minute {
 		p.fetched = time.Now() // also after a failure, so a dead list is not refetched on every call
 		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		if code, body, err := HTTPDo(cctx, p.client, http.MethodGet, p.cfg.ModelsURL, nil); err == nil && code == 200 {
-			if ids := ModelIDs(body); len(ids) > 0 {
+		if code, body, err := HTTPDo(cctx, p.client, http.MethodGet, p.cfg.ModelsURL, nil, p.key()); err == nil && code == 200 {
+			ids := slices.DeleteFunc(ModelIDs(body), func(id string) bool {
+				return notChat.MatchString(id) || (p.filter != nil && !p.filter.MatchString(id))
+			})
+			if len(ids) > 0 {
 				p.models = ids
 			}
 		}
@@ -201,12 +238,17 @@ func (p *openAI) Models(ctx context.Context) []string {
 
 func (p *openAI) Ask(ctx context.Context, r Request) (string, error) {
 	body, _ := json.Marshal(map[string]any{"model": r.Model, "messages": r.Messages})
-	code, out, err := HTTPDo(ctx, p.client, http.MethodPost, p.cfg.URL, body)
+	key := p.key()
+	code, out, err := HTTPDo(ctx, p.client, http.MethodPost, p.cfg.URL, body, key)
 	if err != nil {
 		return "", err
 	}
 	if code != 200 {
-		return "", fmt.Errorf("HTTP %d: %s", code, Short(string(out)))
+		msg := string(out)
+		if key != "" { // a provider must never be able to echo the key into a log or a reply
+			msg = strings.ReplaceAll(msg, key, "[key]")
+		}
+		return "", fmt.Errorf("HTTP %d: %s", code, Short(msg))
 	}
 	text, ok := ChatText(out)
 	if !ok || strings.TrimSpace(text) == "" {
@@ -390,7 +432,7 @@ func Flatten(ms []Message) string {
 
 // ---- shared helpers (also used by the survey probe) ----
 
-func HTTPDo(ctx context.Context, cl *http.Client, method, u string, body []byte) (int, []byte, error) {
+func HTTPDo(ctx context.Context, cl *http.Client, method, u string, body []byte, key string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, err
@@ -399,6 +441,9 @@ func HTTPDo(ctx context.Context, cl *http.Client, method, u string, body []byte)
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("User-Agent", "ai-gateway/0.2")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := cl.Do(req)
 	if err != nil {
 		return 0, nil, err

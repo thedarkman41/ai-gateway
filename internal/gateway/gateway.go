@@ -37,6 +37,8 @@ type Gateway struct {
 	sessions map[string][]provider.Message
 	recent   []string // session ids, oldest first
 	gates    map[string]*gate
+	solo     map[string]chan struct{} // one run at a time for a CLI or terminal app
+	jobs     jobs
 }
 
 // gate spaces out calls to one provider.
@@ -47,10 +49,13 @@ type gate struct {
 
 func New(ps []provider.Provider, l *Ledger) *Gateway {
 	g := &Gateway{providers: ps, byID: map[string]provider.Provider{}, ledger: l, now: time.Now,
-		sessions: map[string][]provider.Message{}, gates: map[string]*gate{}}
+		sessions: map[string][]provider.Message{}, gates: map[string]*gate{}, solo: map[string]chan struct{}{}}
 	for _, p := range ps {
 		g.byID[p.Config().ID] = p
 		g.gates[p.Config().ID] = &gate{}
+		if p.Config().Kind != "openai" {
+			g.solo[p.Config().ID] = make(chan struct{}, 1)
+		}
 	}
 	return g
 }
@@ -167,6 +172,16 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 // call makes one attempt, after waiting out the provider's minimum interval.
 func (g *Gateway) call(ctx context.Context, p provider.Provider, r provider.Request) (string, error) {
 	cfg := p.Config()
+	// A CLI or terminal app runs one ask at a time: two copies would share a scratch directory and
+	// a login. HTTP endpoints take calls in parallel.
+	if lane := g.solo[cfg.ID]; lane != nil {
+		select {
+		case lane <- struct{}{}:
+			defer func() { <-lane }()
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	gt := g.gates[cfg.ID]
 	gt.mu.Lock()
 	wait := time.Duration(cfg.MinIntervalSeconds*float64(time.Second)) - time.Since(gt.last)

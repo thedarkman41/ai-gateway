@@ -103,7 +103,9 @@ func open(fs *flag.FlagSet, args []string) *gateway.Gateway {
 	if err != nil {
 		log.Fatalf("%s providers: %v", from, err)
 	}
-	return gateway.New(ps, gateway.OpenLedger(filepath.Join(state, "ledger.json")))
+	g := gateway.New(ps, gateway.OpenLedger(filepath.Join(state, "ledger.json")))
+	g.SetJobsDir(filepath.Join(state, "jobs"))
+	return g
 }
 
 // config parses the shared flags and returns the providers document, where it came from and the

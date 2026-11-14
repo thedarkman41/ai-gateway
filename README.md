@@ -31,6 +31,7 @@ not written yet.
 | codex-cli | B | `codex exec` | answered |
 | cursor-agent | B | `cursor-agent -p --trust` | answered |
 | amp | B | `amp -x` | disabled: execute mode uses paid credits only |
+| rigel-coder | L (local) | Loadout endpoint on rigel | entry added from Bill's own config; not yet called from the gateway |
 
 ## Build and check
 
@@ -47,6 +48,8 @@ ai-gateway models    # providers, state, calls today, model ids
 | `list_models` | Providers, whether each can be called now, calls used today, model ids |
 | `ask` | One question to one model. `model` is `auto` (default: first provider that answers), a provider id, or `provider/model`. `session` continues a conversation |
 | `ask_many` | The same question to 2 to 6 models at once, for comparison |
+| `dispatch` | Fan-out: up to 12 independent tasks handed to the free providers at once; returns a job id immediately |
+| `collect` | The next finished result of a job, with what is still running |
 
 ## One interface for every provider
 
@@ -73,6 +76,24 @@ Add one entry to `providers.json`; nothing in Bill changes.
 - It is interactive only: `kind: tty`, tuned with `ai-gateway try <id>` as freebuff was.
 
 Then `ai-gateway try <id>` to see it answer, and `ai-gateway check` to run them all.
+
+## Plan, fan out, judge
+
+For a large coding task, Bill plans and judges and the other models do the parts:
+
+1. **Plan.** Bill splits the work into independent, self-contained tasks.
+2. **Fan out.** One `dispatch` call hands them all over. The gateway spreads tasks across whichever providers are
+   free (not resting, not out of quota), runs a CLI one task at a time, and retries a failed task on up to two other
+   providers. `copies: 2` on a task gets rival answers from two providers.
+3. **Judge.** `collect` returns results one at a time as they finish, so each is judged (and built or tested) before
+   the next arrives and none floods Bill's context.
+
+Workers only ever see the prompt text: they do not touch the repository, and Bill applies what it accepts.
+[`bill/fan-out.md`](bill/fan-out.md) is the skill that teaches Bill this loop; copy it to `billcat-skills/agent/`.
+
+Finished results are saved under `~/.ai-gateway/jobs/`, so they survive Bill stopping an idle gateway (after five
+minutes without a call). Tasks still running at that moment are lost and reported as such; running the gateway as an
+HTTP service (`serve -http`) avoids that.
 
 ## How it stays up
 

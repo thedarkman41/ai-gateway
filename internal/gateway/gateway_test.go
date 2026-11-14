@@ -50,6 +50,11 @@ func (f *fake) server(t *testing.T) *httptest.Server {
 		case strings.HasPrefix(m, "spent"):
 			http.Error(w, `Error: Free usage limit reached.`, 400)
 			return
+		case strings.HasPrefix(m, "slow"):
+			time.Sleep(700 * time.Millisecond)
+		case strings.HasPrefix(m, "broken"):
+			http.Error(w, "boom", 500)
+			return
 		case strings.HasPrefix(m, "busy"):
 			http.Error(w, `{"error":{"message":"This model is temporarily busy."}}`, 503)
 			return
@@ -255,8 +260,8 @@ func TestMCPEndToEnd(t *testing.T) {
 	if v := got["1"]["result"].(map[string]any)["protocolVersion"]; v != "2025-06-18" {
 		t.Errorf("protocolVersion %v", v)
 	}
-	if n := len(got["2"]["result"].(map[string]any)["tools"].([]any)); n != 3 {
-		t.Errorf("%d tools, want 3", n)
+	if n := len(got["2"]["result"].(map[string]any)["tools"].([]any)); n != 5 {
+		t.Errorf("%d tools, want 5", n)
 	}
 	if s, isErr := text("3"); isErr || !strings.HasPrefix(s, "[answered by p/live]\n\nlive says: hello") {
 		t.Errorf("ask: %q %v", s, isErr)
@@ -396,5 +401,98 @@ func TestTimedOutModelRests(t *testing.T) {
 	}
 	if d := time.Since(start); d > 8*time.Second {
 		t.Errorf("took %s", d)
+	}
+}
+
+// TestDispatchAndCollect is the plan / fan-out / judge loop from the planner's side.
+func TestDispatchAndCollect(t *testing.T) {
+	f := &fake{}
+	srv := f.server(t)
+	cfg := fmt.Sprintf(`{"providers":[
+		{"id":"a","tier":"A","kind":"openai","url":"%[1]s/chat","default_model":"live"},
+		{"id":"b","tier":"A","kind":"openai","url":"%[1]s/chat","default_model":"slow"},
+		{"id":"bad","tier":"A","kind":"openai","url":"%[1]s/chat","default_model":"broken"}]}`, srv.URL)
+	ps, _ := provider.Parse([]byte(cfg))
+	dir := t.TempDir()
+	g := New(ps, OpenLedger(""))
+	g.SetJobsDir(dir)
+	ctx := context.Background()
+
+	// Three tasks spread over three providers; the one that lands on the broken provider is retried elsewhere.
+	id, plan, err := g.Dispatch([]Task{{ID: "parse", Prompt: "write the parser"}, {ID: "tests", Prompt: "write the tests"}, {ID: "docs", Prompt: "write the docs"}})
+	if err != nil || !strings.Contains(plan, "parse → a") || !strings.Contains(plan, "tests → b") || !strings.Contains(plan, "docs → bad") {
+		t.Fatalf("dispatch: %v\n%s", err, plan)
+	}
+	// Results arrive one at a time, fastest first, each with what is still to come.
+	var seen []string
+	for i := 0; i < 10; i++ {
+		out, err := g.Collect(ctx, id, 5*time.Second, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, task := range []string{"parse", "tests", "docs"} {
+			if strings.Contains(out, "### task "+task+", answered by") {
+				seen = append(seen, task)
+			}
+		}
+		if strings.Contains(out, "FAILED") {
+			t.Errorf("a task failed although another provider could take it:\n%s", out)
+		}
+		if strings.Contains(out, "is complete: all 3 results delivered") {
+			break
+		}
+	}
+	if len(seen) != 3 || seen[len(seen)-1] != "tests" {
+		t.Errorf("collected %v, want all three with the slow one last", seen)
+	}
+
+	// copies asks several providers the same task; a named model is honoured; nothing ready yet says so.
+	id, plan, err = g.Dispatch([]Task{{ID: "hard", Prompt: "p", Copies: 2}, {ID: "pinned", Prompt: "p", Models: []string{"b/slow"}}})
+	if err != nil || strings.Count(plan, "hard → ") != 2 || !strings.Contains(plan, "pinned → b/slow") {
+		t.Fatalf("copies: %v\n%s", err, plan)
+	}
+	if out, _ := g.Collect(ctx, id, 10*time.Second, 4); !strings.Contains(out, "### task hard") {
+		t.Errorf("first collect:\n%s", out)
+	}
+
+	// A gateway restarted mid-job (Bill stops an idle server) still hands out what had finished,
+	// and names what was lost.
+	id, _, _ = g.Dispatch([]Task{{ID: "quick", Prompt: "p", Models: []string{"a"}}, {ID: "long", Prompt: "p", Models: []string{"b/slow"}}})
+	time.Sleep(250 * time.Millisecond) // quick is done, long is not
+	g2 := New(ps, OpenLedger(""))
+	g2.SetJobsDir(dir)
+	out, err := g2.Collect(ctx, id, time.Second, 4)
+	if err != nil || !strings.Contains(out, "### task quick") || !strings.Contains(out, "Lost when the gateway restarted: long → b/slow") {
+		t.Errorf("after restart: %v\n%s", err, out)
+	}
+
+	// Bad input is refused with a usable message.
+	if _, _, err := g.Dispatch([]Task{{ID: "x", Prompt: "p"}, {ID: "x", Prompt: "q"}}); err == nil {
+		t.Error("duplicate task ids accepted")
+	}
+	if _, _, err := g.Dispatch([]Task{{ID: "x", Prompt: "p", Models: []string{"nope"}}}); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Errorf("unknown model: %v", err)
+	}
+	if _, err := g.Collect(ctx, "../etc", time.Second, 1); err == nil {
+		t.Error("a path was accepted as a job id")
+	}
+}
+
+// A CLI provider runs one ask at a time even when a job sends it several.
+func TestCLIRunsOneAtATime(t *testing.T) {
+	dir := t.TempDir()
+	g := build(t, `{"providers":[{"id":"c","tier":"B","kind":"cli","bin":"sh",
+		"ask_args":["-c","if ! mkdir `+dir+`/lock 2>/dev/null; then echo OVERLAP; exit 0; fi; sleep 0.3; rmdir `+dir+`/lock; echo fine # {prompt}"]}]}`)
+	id, _, err := g.Dispatch([]Task{{ID: "1", Prompt: "p", Models: []string{"c"}}, {ID: "2", Prompt: "p", Models: []string{"c"}}, {ID: "3", Prompt: "p", Models: []string{"c"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all string
+	for i := 0; i < 5 && !strings.Contains(all, "is complete"); i++ {
+		out, _ := g.Collect(context.Background(), id, 5*time.Second, 4)
+		all += out
+	}
+	if strings.Contains(all, "OVERLAP") || strings.Count(all, "fine") != 3 {
+		t.Errorf("runs overlapped or went missing:\n%s", all)
 	}
 }

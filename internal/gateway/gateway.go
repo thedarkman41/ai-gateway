@@ -318,7 +318,7 @@ const (
 
 var (
 	keyRe   = regexp.MustCompile(`(?i)api key|HTTP 401|HTTP 403|unauthorized|authentication`)
-	quotaRe = regexp.MustCompile(`(?i)quota|usage limit|limit reached|exhausted`)
+	quotaRe = regexp.MustCompile(`(?i)quota|usage limit|limit reached|exhausted|out of credits`)
 	busyRe  = regexp.MustCompile(`(?i)HTTP 429|HTTP 503|temporarily|busy|overloaded|rate.?limit`)
 )
 

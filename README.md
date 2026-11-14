@@ -28,7 +28,9 @@ not written yet.
 | freebuff | B | terminal session (it has no prompt flag) | answered, reply read correctly |
 | qwen-code | B | `qwen -p` | disabled: its sign-in offers no free keyless option |
 | copilot-cli | B | `copilot -p` | answered, on the Copilot Free plan |
-| codex-cli, amp, cursor-agent | B | each CLI's prompt flag | entries ready, flags from memory; each shows as unavailable until the CLI is installed and signed in |
+| codex-cli | B | `codex exec` | answered |
+| cursor-agent | B | `cursor-agent -p --trust` | first try stopped at the workspace-trust prompt; `--trust` added, not yet re-run |
+| amp | B | `amp -x` | disabled: execute mode uses paid credits only |
 
 ## Build and check
 

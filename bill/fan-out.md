@@ -7,7 +7,10 @@ FAN-OUT — other agents write the code; you plan it and you check it. Two tools
 A. ONE FUNCTION -> consensus.
    enable_tools mcp__ai-gateway__consensus, then call it with the function described in full: language, exact
    signature, behaviour, and the code of anything it must call. The five strongest free agents each write it.
-   - "MAJORITY": most of them wrote the same code. Use it.
+   For Python, add "tests": a few calls as lists of arguments, e.g. [[2],[15],[97]]; the answers are run on them
+   and count as agreeing when they return the same results. If the function needs imports or helpers, give them
+   as "context".
+   - "MAJORITY": most of them agree. Use it. "Where they differ" shows a call the others got differently.
    - "NO MAJORITY": you get the distinct candidates. Write each to a file and check it (syntax check, a quick test);
      keep the one that passes, or the simplest if several pass.
 

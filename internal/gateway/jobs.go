@@ -262,13 +262,20 @@ func (g *Gateway) Rework(id string, failed map[string]string) (string, error) {
 		for _, tid := range ids {
 			b.mu.Lock()
 			task, old := b.task(tid), b.Parts[tid]
+			others := []string{b.Header} // what the function is tested alongside: the rest of the program
+			for _, t := range b.Tasks {
+				if t.ID != tid {
+					others = append(others, b.Parts[t.ID].Text)
+				}
+			}
+			surrounding := strings.Join(others, "\n\n")
 			b.mu.Unlock()
 			prompt := task.Prompt + "\n\nAn earlier attempt was rejected. The problem reported:\n" + strings.TrimSpace(failed[tid])
 			if old.Text != "" {
 				prompt += "\n\nThe rejected code:\n" + old.Text
 			}
 			start := time.Now()
-			v, err := g.Consensus(ctx, b.System, prompt, defaultVoters)
+			v, err := g.Consensus(ctx, Request{Prompt: prompt, System: b.System, Context: surrounding})
 			b.mu.Lock()
 			if err != nil {
 				b.Log = append(b.Log, fmt.Sprintf("%s rework failed: %s", tid, firstLine(err.Error())))

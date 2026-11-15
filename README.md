@@ -97,9 +97,21 @@ Then `ai-gateway try <id>` to see it answer, and `ai-gateway check` to run them 
 There is no fixed order of providers for coding work. Bill plans and checks; the gateway decides who writes.
 
 **One function: a vote.** `consensus` gives the function to the five strongest agents that are free. Each writes it
-independently. Answers are compared as code: comments, docstrings, blank lines, spacing and Markdown wrapping are set
-aside. If more than half agree, that version is returned. If not, every distinct candidate comes back and Bill
-chooses by checking them. A seat whose agent fails moves on to the next strongest, so five answers still come back.
+independently, and a seat whose agent fails moves on to the next strongest, so five answers still come back. If more
+than half agree, that version is returned; if not, every distinct candidate comes back, with a test call on which
+each differs, and Bill chooses.
+
+What "agree" means depends on the language:
+
+- **Python: same behaviour.** Agents that all write a correct function rarely write the same text, so the gateway
+  runs every candidate on the same test calls and groups those that return the same results. The test calls come
+  from Bill (`tests`), else from a fast model asked to write some, else plain integers. A call every candidate
+  rejects is ignored. Code that does not load, or never returns, cannot win.
+- **Anything else: same text**, with comments, docstrings, blank lines, spacing and Markdown wrapping set aside.
+
+Candidates are code written by other models, so they run in a sandbox (macOS `sandbox-exec`): no network, no writes
+outside a temporary directory, no reading your home directory, two seconds a call. Where no sandbox exists the
+gateway does not run them and compares text instead. `AI_GATEWAY_VOTE=text` turns running candidates off.
 
 **A program: a greedy queue.** `build` takes one task per function. Every free agent takes a task from the queue,
 strongest first, and takes another the moment it finishes, so faster agents write more of the program. A task that

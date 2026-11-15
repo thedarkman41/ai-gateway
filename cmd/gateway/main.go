@@ -229,7 +229,7 @@ func runConsensus(ctx context.Context, args []string) {
 		log.Fatal("usage: gateway consensus [-agents n] <prompt>")
 	}
 	start := time.Now()
-	v, err := g.Consensus(ctx, "", fs.Arg(0), *n)
+	v, err := g.Consensus(ctx, gateway.Request{Prompt: fs.Arg(0), Agents: *n})
 	if err != nil {
 		log.Fatal(err)
 	}

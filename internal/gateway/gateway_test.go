@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -55,6 +56,9 @@ func (f *fake) server(t *testing.T) *httptest.Server {
 			return
 		case strings.HasPrefix(m, "spent"):
 			http.Error(w, `Error: Free usage limit reached.`, 400)
+			return
+		case m == "testcalls":
+			w.Write([]byte(`{"choices":[{"message":{"content":"Sure:\n` + "```" + `json\n[[9], [11], 15]\n` + "```" + `"}}]}`))
 			return
 		case strings.HasPrefix(m, "cutfence"):
 			w.Write([]byte(`{"choices":[{"message":{"content":"Here:\n` + "```" + `python\ndef f():\n    pass\n# more"},"finish_reason":"stop"}]}`))
@@ -617,6 +621,7 @@ func agents(list ...string) string { return `{"providers":[` + strings.Join(list
 // One function, five agents: the version most of them agree on wins, and agreement ignores
 // comments, docstrings, blank lines, spacing and Markdown wrapping.
 func TestConsensus(t *testing.T) {
+	t.Setenv("AI_GATEWAY_VOTE", "text") // this test is about comparing text; TestBehaviourVote runs the code
 	plain := "def f(n):\n    return n + 1"
 	g := build(t, agents(
 		agent("weak", 1, 0, "def f(n): return n+1  # never asked: too weak"),
@@ -626,7 +631,7 @@ func TestConsensus(t *testing.T) {
 		agent("odd", 6, 0, "def f(n):\n    return 1 + n"),
 		agent("other", 5, 0, "f = lambda n: n + 1"),
 		`{"id":"down","tier":"B","kind":"cli","bin":"no-such-binary-xyz","strength":10,"ask_args":["{prompt}"]}`))
-	v, err := g.Consensus(context.Background(), "", "write f", 5)
+	v, err := g.Consensus(context.Background(), Request{Prompt: "write f"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +639,7 @@ func TestConsensus(t *testing.T) {
 		t.Errorf("verdict: majority=%v answers=%d groups=%+v", v.Majority, v.Answers, v.Groups)
 	}
 	out := v.String()
-	if !strings.HasPrefix(out, "MAJORITY: 3 of 5 agents gave this answer (top, chatty, docs). Differed: odd, other.") || !strings.Contains(out, plain) || strings.Contains(out, "lambda") {
+	if !strings.HasPrefix(out, "MAJORITY: 3 of 5 agents agree (top, chatty, docs); compared as text. Differed: odd, other.") || !strings.Contains(out, plain) || strings.Contains(out, "lambda") {
 		t.Errorf("text:\n%s", out)
 	}
 	// Who sided with the majority is kept, to show which agents to trust.
@@ -647,7 +652,7 @@ func TestConsensus(t *testing.T) {
 
 	// No majority: every candidate comes back for the planner to choose, strongest group first.
 	g = build(t, agents(agent("a", 9, 0, "x = 1"), agent("b", 8, 0, "x = 2"), agent("c", 7, 0, "x = 3")))
-	v, _ = g.Consensus(context.Background(), "", "write x", 5)
+	v, _ = g.Consensus(context.Background(), Request{Prompt: "write x"})
 	if v.Majority || v.Winner() != "x = 1" || !strings.Contains(v.String(), "NO MAJORITY among 3 answers") || strings.Count(v.String(), "### candidate") != 3 {
 		t.Errorf("no majority:\n%s", v)
 	}
@@ -656,7 +661,7 @@ func TestConsensus(t *testing.T) {
 	g = build(t, agents(
 		`{"id":"broken","tier":"B","kind":"cli","bin":"sh","strength":10,"preamble":"","ask_args":["-c","exit 1","{prompt}"]}`,
 		agent("a", 9, 0, "y = 1"), agent("b", 8, 0, "y = 1"), agent("c", 7, 0, "y = 1"), agent("d", 6, 0, "y = 1"), agent("e", 5, 0, "y = 2")))
-	v, _ = g.Consensus(context.Background(), "", "write y", 5)
+	v, _ = g.Consensus(context.Background(), Request{Prompt: "write y"})
 	if v.Answers != 5 || !v.Majority || len(v.Failed) != 1 || !strings.HasPrefix(v.Failed[0], "broken:") {
 		t.Errorf("replacement: answers=%d majority=%v failed=%v", v.Answers, v.Majority, v.Failed)
 	}
@@ -722,5 +727,77 @@ func TestBuildQueueAndRework(t *testing.T) {
 	}
 	if _, _, err := g.Build([]Task{{ID: "x", Prompt: "p"}, {ID: "x", Prompt: "q"}}, "", "", ""); err == nil {
 		t.Error("duplicate task ids accepted")
+	}
+}
+
+// The five answers the real agents gave for is_prime on betelgeuse: all correct, all worded
+// differently, so comparing text found five groups of one. Compared by behaviour they agree.
+var isPrimeAnswers = []string{
+	"def is_prime(n):\n    if not isinstance(n, int) or n < 2:\n        return False\n    if n < 4:\n        return True\n    if n % 2 == 0 or n % 3 == 0:\n        return False\n    i = 5\n    while i * i <= n:\n        if n % i == 0 or n % (i + 2) == 0:\n            return False\n        i += 6\n    return True",
+	"def is_prime(n: int) -> bool:\n    if n < 2:\n        return False\n    if n in (2, 3):\n        return True\n    if n % 2 == 0 or n % 3 == 0:\n        return False\n    i = 5\n    while i * i <= n:\n        if n % i == 0 or n % (i + 2) == 0:\n            return False\n        i += 6\n    return True",
+	"def is_prime(n):\n    if not isinstance(n, int) or isinstance(n, bool) or n < 2:\n        return False\n    if n % 2 == 0:\n        return n == 2\n    divisor = 3\n    while divisor * divisor <= n:\n        if n % divisor == 0:\n            return False\n        divisor += 2\n    return True",
+	"import math\n\ndef _helper(n):\n    return n < 2\n\ndef is_prime(n):\n    print('checking', n)\n    if _helper(n):\n        return False\n    return all(n % d for d in range(2, math.isqrt(n) + 1))",
+}
+
+func TestBehaviourVote(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is not installed")
+	}
+	t.Setenv("AI_GATEWAY_UNSANDBOXED", "1") // the test machine has no sandbox-exec; the candidates here are ours
+	wrong := "def is_prime(n):\n    return n % 2 == 1"
+	loop := "def is_prime(n):\n    while True:\n        pass"
+	g := build(t, agents(
+		agent("a", 9, 0, isPrimeAnswers[0]), agent("b", 8, 0, isPrimeAnswers[1]), agent("c", 7, 0, isPrimeAnswers[2]),
+		agent("d", 6, 0, isPrimeAnswers[3]), agent("e", 5, 0, wrong)))
+	ctx := context.Background()
+
+	// Four differently-written correct answers agree; the wrong one is shown with a call that exposes it.
+	v, err := g.Consensus(ctx, Request{Prompt: "Write a Python function is_prime(n).", Tests: [][]any{{1}, {2}, {9}, {17}, {25}, {97}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := v.String()
+	if !v.Majority || strings.Join(v.Groups[0].By, ",") != "a,b,c,d" || v.Winner() != isPrimeAnswers[0] {
+		t.Fatalf("groups %+v\n%s", v.Groups, out)
+	}
+	if !strings.Contains(out, "MAJORITY: 4 of 5 agents agree (a, b, c, d); compared by behaviour on 6 test calls to is_prime. Differed: e.") ||
+		!strings.Contains(out, "Where they differ: is_prime(1): the majority gives False, candidate 2 gives True") {
+		t.Errorf("text:\n%s", out)
+	}
+
+	// With no test calls supplied and no model to write them, plain integers are used.
+	if v, _ = g.Consensus(ctx, Request{Prompt: "Write a Python function is_prime(n)."}); !v.Majority || !strings.Contains(v.Method, "compared by behaviour on 16 test calls") {
+		t.Errorf("default inputs: %s %+v", v.Method, v.Groups)
+	}
+
+	// Code that does not load, or never returns, cannot win and does not stall the vote.
+	g = build(t, agents(agent("syntax", 9, 0, "def is_prime(n)\n    return True"), agent("loop", 8, 0, loop), agent("renamed", 7, 0, "def prime(n):\n    return True"),
+		agent("ok", 6, 0, isPrimeAnswers[0])))
+	start := time.Now()
+	v, _ = g.Consensus(ctx, Request{Prompt: "Write a Python function is_prime(n).", Tests: [][]any{{7}, {8}}})
+	if v.Majority || v.Groups[0].By[0] != "ok" || time.Since(start) > 20*time.Second {
+		t.Errorf("broken candidates: winner %v after %s\n%s", v.Groups[0].By, time.Since(start), v)
+	}
+	if out := v.String(); !strings.Contains(out, "does not run: SyntaxError") || !strings.Contains(out, "does not run: does not define is_prime") || !strings.Contains(out, "is_prime(7): candidate 1 gives True, candidate 3 gives timed out") {
+		t.Errorf("text:\n%s", out)
+	}
+
+	// A part of a larger program is tested alongside the code it relies on.
+	g = build(t, agents(agent("a", 9, 0, "def area(r):\n    return PI * square(r)"), agent("b", 8, 0, "def area(r):\n    return square(r) * PI"),
+		agent("c", 7, 0, "def area(r):\n    return PI * r * r")))
+	v, _ = g.Consensus(ctx, Request{Prompt: "Write a Python function area(r).", Tests: [][]any{{1}, {2.5}},
+		Context: "PI = 3.14159\n\ndef square(x):\n    return x * x"})
+	if !v.Majority || len(v.Groups) != 1 {
+		t.Errorf("with context: %s %+v", v.Method, v.Groups)
+	}
+
+	// Test calls can come from a model: the first API provider is asked for them.
+	f := &fake{}
+	srv := f.server(t)
+	g = build(t, agents(agent("a", 9, 0, isPrimeAnswers[0]), agent("b", 8, 0, isPrimeAnswers[1]), agent("c", 7, 0, wrong),
+		fmt.Sprintf(`{"id":"api","tier":"K","kind":"openai","strength":1,"url":"%s/chat","default_model":"testcalls"}`, srv.URL)))
+	v, _ = g.Consensus(ctx, Request{Prompt: "Write a Python function is_prime(n).", Agents: 3})
+	if !v.Majority || !strings.Contains(v.Method, "on 3 test calls") || strings.Join(v.Groups[0].By, ",") != "a,b" {
+		t.Errorf("model-written calls: %s %+v", v.Method, v.Groups)
 	}
 }

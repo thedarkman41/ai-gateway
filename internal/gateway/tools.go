@@ -99,19 +99,30 @@ func (g *Gateway) Tools() []mcp.Tool {
 		{
 			Name: "consensus",
 			Description: fmt.Sprintf("For ONE function: have the %d strongest free agents each write it independently, and return the version most of them agree on. "+
+				"Python answers are run on the same test calls and count as agreeing when they return the same results; other languages are compared as text. "+
 				"With no majority it returns the distinct candidates for you to choose between. The prompt goes to third-party services and must be "+
 				"self-contained: give the exact signature, the language, and any code the function must call.", defaultVoters),
 			InputSchema: map[string]any{"type": "object", "required": []string{"prompt"}, "properties": map[string]any{
-				"prompt": str("The function to write, self-contained: signature, language, behaviour."),
-				"system": str("Optional instructions for the agents."),
-				"agents": map[string]any{"type": "integer", "description": fmt.Sprintf("How many agents vote (default %d, at most %d).", defaultVoters, maxVoters)},
+				"prompt":  str("The function to write, self-contained: signature, language, behaviour."),
+				"system":  str("Optional instructions for the agents."),
+				"agents":  map[string]any{"type": "integer", "description": fmt.Sprintf("How many agents vote (default %d, at most %d).", defaultVoters, maxVoters)},
+				"tests":   map[string]any{"type": "array", "items": map[string]any{"type": "array"}, "description": "Optional, Python only: test calls to compare the answers on, each a list of arguments, e.g. [[2],[15],[97]]. Left out, a model writes some."},
+				"context": str("Optional, Python only: code the function relies on (imports, helper functions), run before each answer is tested."),
 			}},
 			Annotations: map[string]any{"readOnlyHint": false, "openWorldHint": true},
 			Handler: func(ctx context.Context, a map[string]any) (string, error) {
 				n, _ := a["agents"].(float64)
 				ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 				defer cancel()
-				v, err := g.Consensus(ctx, arg(a, "system"), arg(a, "prompt"), int(n))
+				var tests [][]any
+				if list, ok := a["tests"].([]any); ok {
+					for _, t := range list {
+						if args, ok := t.([]any); ok {
+							tests = append(tests, args)
+						}
+					}
+				}
+				v, err := g.Consensus(ctx, Request{Prompt: arg(a, "prompt"), System: arg(a, "system"), Agents: int(n), Context: arg(a, "context"), Tests: tests})
 				if err != nil {
 					return "", err
 				}

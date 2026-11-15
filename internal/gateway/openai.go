@@ -146,6 +146,9 @@ func voteReply(v Verdict) string {
 	if defRe.MatchString(v.Winner()) {
 		lang = "python"
 	}
+	if note := v.PrivacyNote(); note != "" {
+		how += ". Privacy: " + note
+	}
 	return fmt.Sprintf("[ai-gateway vote: %s]\n\n```%s\n%s\n```\n", how, lang, v.Winner())
 }
 

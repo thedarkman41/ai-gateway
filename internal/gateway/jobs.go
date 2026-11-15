@@ -60,6 +60,7 @@ type buildJob struct {
 	queue    []string
 	inflight map[string]string   // task id → agent
 	tried    map[string][]string // task id → agents that failed it
+	private  map[string]string   // task id → why only a local agent may take it
 	done     chan struct{}       // closed when the current phase ends
 	path     string
 }
@@ -107,9 +108,15 @@ func (g *Gateway) Build(tasks []Task, system, header, footer string) (id, plan s
 		}
 		seen[tasks[i].ID] = true
 	}
-	agents := g.ranked()
+	agents := g.ranked(false)
 	if len(agents) == 0 {
 		return "", "", errors.New("no agent is free right now; see list_models")
+	}
+	private := map[string]string{} // tasks that only a local agent may take, and why
+	for _, t := range tasks {
+		if why := g.private(system, t.Prompt); why != "" {
+			private[t.ID] = why
+		}
 	}
 	agents = agents[:min(len(agents), maxWorkers)]
 
@@ -117,7 +124,7 @@ func (g *Gateway) Build(tasks []Task, system, header, footer string) (id, plan s
 	rand.Read(rnd[:])
 	b := &buildJob{ID: fmt.Sprintf("b%x", rnd), Created: time.Now(), System: system, Header: header, Footer: footer,
 		Tasks: tasks, Parts: map[string]Part{}, Missing: map[string]string{}, Running: true,
-		inflight: map[string]string{}, tried: map[string][]string{}, done: make(chan struct{})}
+		inflight: map[string]string{}, tried: map[string][]string{}, done: make(chan struct{}), private: private}
 	b.cond = sync.NewCond(&b.mu)
 	for _, t := range tasks {
 		b.queue = append(b.queue, t.ID)
@@ -149,9 +156,10 @@ func (g *Gateway) Build(tasks []Task, system, header, footer string) (id, plan s
 		id := p.Config().ID
 		names = append(names, id)
 		wg.Add(1)
+		local := p.Config().Local
 		go func() {
 			defer wg.Done()
-			g.work(ctx, b, id)
+			g.work(ctx, b, id, local)
 		}()
 		time.Sleep(time.Millisecond) // keep the start order
 	}
@@ -161,6 +169,9 @@ func (g *Gateway) Build(tasks []Task, system, header, footer string) (id, plan s
 		b.mu.Lock()
 		for _, id := range b.queue { // whatever is left had no agent to take it
 			b.Missing[id] = "no agent was left to write it"
+			if why := b.private[id]; why != "" {
+				b.Missing[id] = "kept on this machine (" + why + ") and no local agent could write it"
+			}
 		}
 		b.queue = nil
 		b.finishLocked()
@@ -172,14 +183,14 @@ func (g *Gateway) Build(tasks []Task, system, header, footer string) (id, plan s
 
 // work is one agent's loop: take a task, write it, take the next. It leaves when the queue is
 // empty and nothing in flight could come back to it, or after failing twice in a row.
-func (g *Gateway) work(ctx context.Context, b *buildJob, agent string) {
+func (g *Gateway) work(ctx context.Context, b *buildJob, agent string, local bool) {
 	strikes := 0
 	for {
 		b.mu.Lock()
 		var task *Task
 		for task == nil {
 			for i, id := range b.queue {
-				if !contains(b.tried[id], agent) {
+				if !contains(b.tried[id], agent) && (b.private[id] == "" || local) { // a private task waits for a local agent
 					task = b.task(id)
 					b.queue = append(b.queue[:i], b.queue[i+1:]...)
 					break

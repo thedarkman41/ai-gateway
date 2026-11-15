@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thedarkman41/ai-gateway/internal/privacy"
 	"github.com/thedarkman41/ai-gateway/internal/provider"
 )
 
@@ -39,6 +40,51 @@ type Gateway struct {
 	gates    map[string]*gate
 	solo     map[string]chan struct{} // one run at a time for a CLI or terminal app
 	jobs     jobs
+
+	privacy *privacy.Store                // what may leave this machine
+	known   func() []string               // secret values the gateway itself holds (its API keys)
+	Logf    func(format string, a ...any) // where privacy events are noted; nil = nowhere
+}
+
+// SetPrivacy gives the gateway the user's privacy rules and its own secret values to redact.
+func (g *Gateway) SetPrivacy(store *privacy.Store, known func() []string) {
+	g.privacy, g.known = store, known
+}
+
+func (g *Gateway) logf(format string, a ...any) {
+	if g.Logf != nil {
+		g.Logf(format, a...)
+	}
+}
+
+// private says why a prompt must stay on this machine, or "". Rules that cannot be read count as a
+// reason: when in doubt nothing leaves.
+func (g *Gateway) private(texts ...string) string {
+	pol, err := g.privacy.Policy()
+	if err != nil {
+		return "the privacy rules could not be read (" + err.Error() + ")"
+	}
+	return pol.Private(strings.Join(texts, "\n"))
+}
+
+// scrub returns the messages as they may be sent to an outside provider, secrets redacted, and a
+// summary of what was redacted ("" for nothing).
+func (g *Gateway) scrub(msgs []provider.Message) ([]provider.Message, string) {
+	pol, _ := g.privacy.Policy()
+	var known []string
+	if g.known != nil {
+		known = g.known()
+	}
+	total := map[string]int{}
+	out := make([]provider.Message, len(msgs))
+	for i, m := range msgs {
+		text, found := pol.Scrub(m.Content, known)
+		out[i] = provider.Message{Role: m.Role, Content: text}
+		for k, n := range found {
+			total[k] += n
+		}
+	}
+	return out, privacy.Summary(total)
 }
 
 // gate spaces out calls to one provider.
@@ -49,7 +95,7 @@ type gate struct {
 
 func New(ps []provider.Provider, l *Ledger) *Gateway {
 	g := &Gateway{providers: ps, byID: map[string]provider.Provider{}, ledger: l, now: time.Now,
-		sessions: map[string][]provider.Message{}, gates: map[string]*gate{}, solo: map[string]chan struct{}{}}
+		sessions: map[string][]provider.Message{}, gates: map[string]*gate{}, solo: map[string]chan struct{}{}, privacy: privacy.Open("")}
 	for _, p := range ps {
 		g.byID[p.Config().ID] = p
 		g.gates[p.Config().ID] = &gate{}
@@ -62,8 +108,10 @@ func New(ps []provider.Provider, l *Ledger) *Gateway {
 
 // Answer is a reply and the "provider/model" that gave it.
 type Answer struct {
-	Text string
-	Used string
+	Text     string
+	Used     string
+	Redacted string // what was redacted from the prompt before it was sent, e.g. "2 secrets (api-key)"; "" for nothing
+	Private  string // why the prompt was kept to local models; "" when it was not
 }
 
 // Ask sends prompt to model: "auto" (or empty) tries each provider in order, "provider" uses that
@@ -87,6 +135,25 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 	}
 	msgs = append(msgs, g.history(session)...)
 	msgs = append(msgs, provider.Message{Role: "user", Content: prompt})
+
+	// A prompt that carries private files goes to local models only.
+	var texts []string
+	for _, m := range msgs {
+		texts = append(texts, m.Content)
+	}
+	private := g.private(texts...)
+	if private != "" {
+		var local []provider.Provider
+		for _, p := range candidates {
+			if p.Config().Local {
+				local = append(local, p)
+			}
+		}
+		if len(local) == 0 {
+			return Answer{}, fmt.Errorf("kept on this machine: %s. Only a local model may see it, and none can take it here", private)
+		}
+		candidates = local
+	}
 
 	var notes []string
 	for _, p := range candidates {
@@ -125,7 +192,13 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 				break
 			}
 			attempts++
-			text, err := g.call(ctx, p, provider.Request{Model: m, Messages: msgs})
+			send, redacted := msgs, ""
+			if !p.Config().Local { // an outside provider never sees a secret
+				if send, redacted = g.scrub(msgs); redacted != "" {
+					g.logf("privacy: redacted %s before sending to %s", redacted, name)
+				}
+			}
+			text, err := g.call(ctx, p, provider.Request{Model: m, Messages: send})
 			if err == nil && cutOff(text) {
 				err = fmt.Errorf("the reply was cut off inside a code block after %d characters", len(text))
 			}
@@ -133,7 +206,7 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 				text = unfence(text)
 				g.ledger.Result(id, m, nil, g.now())
 				g.remember(session, prompt, text)
-				return Answer{Text: text, Used: name}, nil
+				return Answer{Text: text, Used: name, Redacted: redacted, Private: private}, nil
 			}
 			lastErr = err
 			notes = append(notes, fmt.Sprintf("%s: %v", name, err))

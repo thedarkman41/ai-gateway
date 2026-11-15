@@ -26,10 +26,14 @@ const (
 )
 
 // ranked lists the providers that can take work now, strongest first (file order breaks ties).
-func (g *Gateway) ranked() []provider.Provider {
+// With localOnly, only those on the user's own machines: the ones a private prompt may go to.
+func (g *Gateway) ranked(localOnly bool) []provider.Provider {
 	var free []provider.Provider
 	for _, p := range g.providers {
 		cfg := p.Config()
+		if localOnly && !cfg.Local {
+			continue
+		}
 		if p.Available() == nil && g.ledger.Blocked(cfg.ID, cfg.DailyLimit, g.now()) == "" {
 			free = append(free, p)
 		}
@@ -59,6 +63,8 @@ type Verdict struct {
 	Majority bool     // Groups[0] is more than half the answers, and at least three answered
 	Failed   []string // "agent: why" for those that did not answer
 	Method   string   // how the answers were compared
+	Private  string   // why only local models were asked; "" when the prompt could leave the machine
+	Redacted string   // what was redacted from the prompt before it left, e.g. "2 secrets (api-key)"
 	Diffs    []string // for each other group, a test call where it parts from the winner
 }
 
@@ -94,7 +100,11 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 		n = defaultVoters
 	}
 	n = min(n, maxVoters)
-	pool := g.ranked()
+	private := g.private(system, prompt)
+	pool := g.ranked(private != "")
+	if len(pool) == 0 && private != "" {
+		return Verdict{}, fmt.Errorf("kept on this machine: %s. Only a local model may see it, and none is free", private)
+	}
 	if len(pool) == 0 {
 		return Verdict{}, errors.New("no agent is free right now; see list_models")
 	}
@@ -106,7 +116,7 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 	var mu sync.Mutex
 	next := 0
 	var votes []Vote
-	var v Verdict
+	v := Verdict{Private: private}
 	take := func() string {
 		mu.Lock()
 		defer mu.Unlock()
@@ -147,6 +157,9 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 				ans, err := g.Ask(askCtx, id, system, prompt+codeOnlySuffix, "")
 				mu.Lock()
 				if err == nil {
+					if ans.Redacted != "" {
+						v.Redacted = ans.Redacted
+					}
 					votes = append(votes, Vote{Provider: id, Used: ans.Used, Text: codeOnly(ans.Text), Seconds: time.Since(start).Seconds()})
 					mu.Unlock()
 					return
@@ -301,7 +314,21 @@ func (v Verdict) String() string {
 	if len(v.Failed) > 0 {
 		fmt.Fprintf(&b, "\nDid not answer: %s\n", strings.Join(v.Failed, "; "))
 	}
+	if note := v.PrivacyNote(); note != "" {
+		fmt.Fprintf(&b, "\nPrivacy: %s.\n", note)
+	}
 	return b.String()
+}
+
+// PrivacyNote says what the privacy rules did to this vote, or "".
+func (v Verdict) PrivacyNote() string {
+	switch {
+	case v.Private != "":
+		return "kept on this machine, only local models were asked: " + v.Private
+	case v.Redacted != "":
+		return v.Redacted + " redacted from the prompt before it was sent"
+	}
+	return ""
 }
 
 var fencedRe = regexp.MustCompile("(?ms)^[ \\t]*```[A-Za-z0-9_+.#-]*[ \\t]*\\r?\\n(.*?)\\r?\\n?^[ \\t]*```[ \\t]*$")

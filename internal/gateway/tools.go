@@ -44,7 +44,14 @@ func (g *Gateway) Tools() []mcp.Tool {
 				if err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("[answered by %s]\n\n%s", ans.Used, ans.Text), nil
+				note := ""
+				switch {
+				case ans.Private != "":
+					note = "; kept on this machine: " + ans.Private
+				case ans.Redacted != "":
+					note = "; " + ans.Redacted + " redacted from the prompt before it was sent"
+				}
+				return fmt.Sprintf("[answered by %s%s]\n\n%s", ans.Used, note, ans.Text), nil
 			},
 		},
 		{

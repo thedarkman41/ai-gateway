@@ -147,6 +147,37 @@ A reply that is nothing but one fenced code block (` ```python ... ``` `) comes 
 provider answers a "reply with only the code" task the same way. A reply with prose around its code, or several
 blocks, keeps its fences. A reply that stops inside a code block, or that the provider marks as cut at its output limit, counts as a failure and is retried on the next model or provider.
 
+## What may leave this machine
+
+Every prompt sent to a provider outside your network passes through the privacy rules, whichever tool or endpoint
+it came in by. A provider marked `"local": true` (the coder on rigel) is exempt: it gets prompts whole.
+
+- **Secrets are redacted.** API keys, tokens, private keys, passwords in assignments and `.env` lines, and
+  credentials in URLs are replaced with `[REDACTED:kind]` before the text is sent. So are the gateway's own API keys.
+- **Credentials files stay home.** A prompt carrying a file that by its name holds credentials (`.env`, `*.pem`,
+  `id_rsa`, anything under `~/.ssh` or `~/.aws`) goes to local models only.
+- **Blocked directories stay home.** So does a prompt carrying a file from a directory you have blocked.
+- **Allow list, optional.** If you list allowed directories, only files under them may leave.
+
+"Kept home" means the prompt is still answered, by local models only: a vote is held among them, and a private task
+in a build waits for a local agent. With no local model free, the request fails and says why.
+
+```bash
+ai-gateway privacy show                     # the rules in force
+ai-gateway privacy block ~/work/client-x    # files under it never leave
+ai-gateway privacy allow ~/Documents/GitHub # if any are listed, only files under these may leave
+ai-gateway privacy remove ~/work/client-x
+ai-gateway privacy check path/to/file       # what would be redacted from it, or whether it would be kept home
+```
+
+The rules live in `~/.ai-gateway/privacy.json` and a running gateway follows edits at once. If that file cannot be
+read, nothing is sent outside until it is fixed. Each redaction is noted in the log (kinds and counts, never values),
+and replies say when a prompt was redacted or kept home.
+
+The path rules recognise the files Bill the Cat attaches to a `delegate_code` hand-off, which carry their full
+path. They cannot see where pasted code came from. Redaction is by pattern: it catches the usual shapes of a secret,
+not every possible one.
+
 ## Running as a service, and the OpenAI-compatible endpoint
 
 ```bash

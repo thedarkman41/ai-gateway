@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/thedarkman41/ai-gateway/internal/mcp"
+	"github.com/thedarkman41/ai-gateway/internal/privacy"
 	"github.com/thedarkman41/ai-gateway/internal/provider"
 )
 
@@ -909,5 +910,86 @@ func TestVoteDeadline(t *testing.T) {
 	}
 	if len(g.Free()) != 4 {
 		t.Errorf("the slow agent was rested for being slow: free %v", g.Free())
+	}
+}
+
+// Nothing secret or private leaves the machine, whichever way a prompt comes in. An outside provider
+// gets the prompt with secrets redacted; a local one gets it whole; a prompt that carries a private
+// file is seen by local models only.
+func TestPrivacy(t *testing.T) {
+	t.Setenv("AI_GATEWAY_VOTE", "text")
+	outside, home := &fake{}, &fake{}
+	so, sh := outside.server(t), home.server(t)
+	cfg := fmt.Sprintf(`{"providers":[
+		{"id":"out","tier":"K","kind":"openai","strength":9,"url":"%s/chat","default_model":"live"},
+		{"id":"home","tier":"L","kind":"openai","strength":4,"local":true,"url":"%s/chat","default_model":"live"}]}`, so.URL, sh.URL)
+	g := build(t, cfg)
+	dir := t.TempDir()
+	store := privacy.Open(filepath.Join(dir, "privacy.json"))
+	if err := store.Edit(func(p *privacy.Policy) { p.BlockedPaths = []string{"/srv/client-x"} }); err != nil {
+		t.Fatal(err)
+	}
+	g.SetPrivacy(store, func() []string { return []string{"the-gateways-own-key"} })
+	var logged []string
+	g.Logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	ctx := context.Background()
+	sent := func(f *fake) string { // the last user message a backend received
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		msgs := f.calls[len(f.calls)-1]["messages"].([]any)
+		return msgs[len(msgs)-1].(map[string]any)["content"].(string)
+	}
+
+	secret := `fix this: client = Thing(api_key="sk-proj-abcdefghijklmnopqrstuvwx") and also the-gateways-own-key`
+	ans, err := g.Ask(ctx, "out", "", secret, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sent(outside); strings.Contains(got, "sk-proj-") || strings.Contains(got, "the-gateways-own-key") || !strings.Contains(got, `api_key="[REDACTED:api-key]"`) {
+		t.Errorf("the outside provider was sent: %q", got)
+	}
+	if ans.Redacted != "2 secrets (api-key, gateway-key)" || len(logged) != 1 || !strings.Contains(logged[0], "redacted 2 secrets") || strings.Contains(logged[0], "sk-proj") {
+		t.Errorf("redacted %q, log %q", ans.Redacted, logged)
+	}
+	if _, err := g.Ask(ctx, "home", "", secret, ""); err != nil || sent(home) != secret {
+		t.Errorf("the local provider should get the prompt whole: %v %q", err, sent(home))
+	}
+
+	// A hand-off carrying a file from a blocked directory: outside providers are not asked at all.
+	private := "TASK:\nfix it\n\nFILE /srv/client-x/app.py (its full current text, supplied by the harness):\n```\nx = 1\n```"
+	before := outside.count()
+	if _, err := g.Ask(ctx, "out", "", private, ""); err == nil || !strings.Contains(err.Error(), "kept on this machine: /srv/client-x/app.py is in a blocked directory") {
+		t.Errorf("a private prompt to an outside provider: %v", err)
+	}
+	if ans, err := g.Ask(ctx, "auto", "", private, ""); err != nil || ans.Used != "home/live" || ans.Private == "" {
+		t.Errorf("auto with a private prompt: %+v, %v", ans, err)
+	}
+	v, err := g.Consensus(ctx, Request{Prompt: private})
+	if err != nil || v.Answers != 1 || v.Groups[0].By[0] != "home" || !strings.Contains(v.String(), "Privacy: kept on this machine, only local models were asked") {
+		t.Errorf("a private vote: %+v, %v", v, err)
+	}
+	id, _, err := g.Build([]Task{{ID: "open", Prompt: "write a"}, {ID: "closed", Prompt: private}}, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := g.Collect(ctx, id, 20*time.Second)
+	if !strings.Contains(out, "- closed: home/live") {
+		t.Errorf("the private task should be written by the local agent:\n%s", out)
+	}
+	for _, c := range outside.calls[before:] {
+		if b, _ := json.Marshal(c); strings.Contains(string(b), "client-x") {
+			t.Errorf("an outside provider saw the private file: %s", b)
+		}
+	}
+
+	// A credentials file is kept home by its name alone, and rules that cannot be read stop everything.
+	env := "FILE /Users/me/app/.env (its full current text, supplied by the harness):\nA=1"
+	if _, err := g.Ask(ctx, "out", "", env, ""); err == nil || !strings.Contains(err.Error(), "credentials file") {
+		t.Errorf(".env file: %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, "privacy.json"), []byte("{broken"), 0o600)
+	os.Chtimes(filepath.Join(dir, "privacy.json"), time.Now().Add(time.Minute), time.Now().Add(time.Minute))
+	if _, err := g.Ask(ctx, "out", "", "an ordinary question", ""); err == nil || !strings.Contains(err.Error(), "privacy rules could not be read") {
+		t.Errorf("broken rules: %v", err)
 	}
 }

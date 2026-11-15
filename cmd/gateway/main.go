@@ -22,6 +22,7 @@ import (
 
 	"github.com/thedarkman41/ai-gateway/internal/gateway"
 	"github.com/thedarkman41/ai-gateway/internal/mcp"
+	"github.com/thedarkman41/ai-gateway/internal/privacy"
 	"github.com/thedarkman41/ai-gateway/internal/probe"
 	"github.com/thedarkman41/ai-gateway/internal/provider"
 	"github.com/thedarkman41/ai-gateway/providers"
@@ -35,6 +36,9 @@ const usage = `usage: gateway <command> [flags]
   serve    run the MCP server on stdio, or on HTTP with -http 127.0.0.1:8765
   check    send a test prompt through every configured provider
   models   print the providers, their state and their models
+  privacy  privacy show | check [file] | block <dir> | allow <dir> | remove <dir>: what may leave this
+           machine. check shows what would be redacted from a file (or standard input) and whether
+           it would be kept home
   service  service install | uninstall | status [-addr 127.0.0.1:8765]: run the gateway in the background
            on this Mac (launchd), serving MCP and the OpenAI-compatible endpoint on that address
   key      key list | key set <provider> | key remove <provider>: free API keys, kept in a private
@@ -131,6 +135,8 @@ func main() {
 		runKey(os.Args[2:])
 	case "service":
 		runService(os.Args[2:])
+	case "privacy":
+		runPrivacy(os.Args[2:])
 	case "consensus":
 		runConsensus(ctx, os.Args[2:])
 	case "build":
@@ -153,6 +159,20 @@ func open(fs *flag.FlagSet, args []string) *gateway.Gateway {
 	}
 	g := gateway.New(ps, gateway.OpenLedger(filepath.Join(state, "ledger.json")))
 	g.SetJobsDir(filepath.Join(state, "jobs"))
+	// The privacy rules, and the gateway's own API keys as values to redact wherever they turn up.
+	g.SetPrivacy(privacy.Open(filepath.Join(state, "privacy.json")), func() []string {
+		var known []string
+		for _, v := range readKeys(filepath.Join(state, "keys.json")) {
+			known = append(known, v)
+		}
+		for _, p := range ps {
+			if env := p.Config().KeyEnv; env != "" && os.Getenv(env) != "" {
+				known = append(known, os.Getenv(env))
+			}
+		}
+		return known
+	})
+	g.Logf = log.Printf
 	return g
 }
 
@@ -297,6 +317,104 @@ func runBuild(ctx context.Context, args []string) {
 func hint(key string) string {
 	key = strings.TrimSpace(key)
 	return fmt.Sprintf("(%d characters, starts %s…)", len(key), key[:min(4, len(key))])
+}
+
+// runPrivacy shows and edits the privacy rules, and tests text against them.
+func runPrivacy(args []string) {
+	fs := flag.NewFlagSet("privacy", flag.ExitOnError)
+	if len(args) == 0 {
+		log.Fatal("usage: gateway privacy show | check [file] | block <dir> | allow <dir> | remove <dir>")
+	}
+	_, _, state := config(fs, args[1:])
+	store := privacy.Open(filepath.Join(state, "privacy.json"))
+	pol, err := store.Policy()
+	if err != nil {
+		log.Fatalf("%v\nUntil this is fixed the gateway sends nothing to outside providers.", err)
+	}
+	dir := func() string {
+		if fs.NArg() != 1 {
+			log.Fatalf("usage: gateway privacy %s <dir>", args[0])
+		}
+		return privacy.Expand(fs.Arg(0))
+	}
+	without := func(list []string, d string) []string {
+		var out []string
+		for _, x := range list {
+			if x != d {
+				out = append(out, x)
+			}
+		}
+		return out
+	}
+	show := func() {
+		pol, _ := store.Policy()
+		fmt.Println("Always: API keys, tokens, private keys, passwords and credentials in URLs are redacted before a prompt")
+		fmt.Println("leaves this machine, and a prompt carrying a credentials file (.env, *.pem, ~/.ssh/...) is kept home.")
+		fmt.Printf("\nBlocked directories (files under these never leave): %s\n", orNone(pol.BlockedPaths))
+		fmt.Printf("Allowed directories (if any are listed, only files under these may leave): %s\n", orNone(pol.AllowedPaths))
+		fmt.Printf("Extra patterns to redact: %s\n", orNone(pol.ExtraSecrets))
+	}
+	switch args[0] {
+	case "show":
+		show()
+	case "block":
+		d := dir()
+		if err := store.Edit(func(p *privacy.Policy) { p.BlockedPaths = append(without(p.BlockedPaths, d), d) }); err != nil {
+			log.Fatal(err)
+		}
+		show()
+	case "allow":
+		d := dir()
+		if err := store.Edit(func(p *privacy.Policy) { p.AllowedPaths = append(without(p.AllowedPaths, d), d) }); err != nil {
+			log.Fatal(err)
+		}
+		show()
+	case "remove":
+		d := dir()
+		if err := store.Edit(func(p *privacy.Policy) {
+			p.BlockedPaths, p.AllowedPaths = without(p.BlockedPaths, d), without(p.AllowedPaths, d)
+		}); err != nil {
+			log.Fatal(err)
+		}
+		show()
+	case "check":
+		var data []byte
+		name := "standard input"
+		if fs.NArg() == 1 {
+			name = privacy.Expand(fs.Arg(0))
+			data, err = os.ReadFile(name)
+		} else {
+			data, err = io.ReadAll(os.Stdin)
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		text := string(data)
+		// A file is checked as Bill would attach it to a hand-off, so the path rules apply to it.
+		probe := text
+		if fs.NArg() == 1 {
+			probe = "FILE " + name + " (its full current text, supplied by the harness):\n" + text
+		}
+		if why := pol.Private(probe); why != "" {
+			fmt.Printf("KEPT HOME: %s.\nA prompt carrying this goes to local models only.\n", why)
+			return
+		}
+		clean, found := pol.Scrub(text, nil)
+		if s := privacy.Summary(found); s != "" {
+			fmt.Printf("WOULD LEAVE with %s redacted. As it would be sent:\n\n%s\n", s, clean)
+			return
+		}
+		fmt.Println("WOULD LEAVE unchanged: nothing in it matches a secret pattern.")
+	default:
+		log.Fatal("usage: gateway privacy show | check [file] | block <dir> | allow <dir> | remove <dir>")
+	}
+}
+
+func orNone(list []string) string {
+	if len(list) == 0 {
+		return "none"
+	}
+	return strings.Join(list, ", ")
 }
 
 const serviceLabel = "local.ai-gateway"

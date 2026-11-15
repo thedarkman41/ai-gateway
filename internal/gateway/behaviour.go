@@ -122,7 +122,7 @@ func (g *Gateway) testInputs(ctx context.Context, prompt string) [][]any {
 		"Reply with only a JSON array. Each element is the list of positional arguments for one call. " +
 		"Example for a function f(a, b): [[1, 2], [0, 0], [-3, 7]]"
 	tried := 0
-	for _, p := range g.ranked() {
+	for _, p := range g.ranked(false) { // Ask itself keeps a private prompt to local models
 		if p.Config().Kind != "openai" || tried >= 3 || ctx.Err() != nil {
 			continue
 		}

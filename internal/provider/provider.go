@@ -48,6 +48,7 @@ type Config struct {
 	ID           string            `json:"id"`
 	Tier         string            `json:"tier"`
 	Strength     int               `json:"strength,omitempty"` // how good its code is, 1 to 10: votes and queues go to the strongest free agents first
+	Local        bool              `json:"local,omitempty"`    // runs on your own machines: prompts go to it unredacted, and private ones go only to it
 	Kind         string            `json:"kind"`               // openai | cli | tty
 	URL          string            `json:"url,omitempty"`
 	ModelsURL    string            `json:"models_url,omitempty"`

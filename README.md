@@ -186,26 +186,53 @@ ai-gateway service status
 ai-gateway service uninstall
 ```
 
-The service listens on `127.0.0.1:8765` only and refuses requests that do not come from this machine. It serves:
+The service listens on `127.0.0.1:8765` only and refuses requests that do not come from this machine. That port
+is fixed in the installed job; if something else holds it the gateway fails to start instead of moving.
 
 | Path | What |
 |---|---|
+| `/healthz` | `200 {"ok": true}` while it can serve; `503 {"ok": false, "state": "…"}` when no agent can answer |
 | `/mcp` | The MCP tools, over HTTP |
-| `/v1/chat/completions` | An OpenAI-compatible endpoint, streamed or not |
-| `/v1/models` | The model names that endpoint takes |
-| `/healthz` | `200 {"ok": true}` while it can serve; `503 {"ok": false, "state": "…"}` when no agent can answer. The form Bill's health check requires |
-
-On the chat endpoint the model name chooses what happens: `coder` (also `consensus`, `vote`) runs the five-agent
-vote and replies with the winning code; `auto`, a provider id or `provider/model` gives one answer through the usual
-routing. A vote waits at most 150 seconds for its agents and is decided among those that have answered.
+| `POST /v1/chat/completions` | OpenAI-compatible, streamed or not. Model `coder` (also `consensus`, `vote`) runs the vote; `auto`, a provider id or `provider/model` gives one answer |
+| `POST /v1/builds` | Start a build: `{"language", "header", "footer", "context", "tasks": [{"id", "prompt", "tests"}]}` → `202 {"build_id"}` |
+| `GET /v1/builds/{id}?wait=N` | Where it stands, waiting up to N seconds (at most 120) for it to finish |
+| `POST /v1/builds/{id}/rework` | `{"failures": [{"id", "error"}]}` → `202`; then poll the GET |
+| `DELETE /v1/builds/{id}` | Cancel |
+| `GET /v1/models` | The model names the chat endpoint takes |
 
 The job records the `PATH` of the shell that installed it, because that is where the agents' CLIs are found. Run
 `service install` again after installing another CLI or rebuilding the gateway.
 
-**Bill the Cat's `delegate_code`** posts its coding task to an OpenAI-compatible "coder". Pointing it at the service
-turns every hand-off into a vote: set `BILLCAT_CODER_URL=http://127.0.0.1:8765` and `BILLCAT_CODER_TIMEOUT=180` in
-Bill's environment. Note what that changes: the task and the text of the files Bill has read then go to outside
-services instead of staying on your network.
+### The contract with Bill the Cat
+
+These shapes are shared with Bill (`phase12-gateway-contract.md`, v1): its `delegate_code` posts to the chat
+endpoint and its `delegate_build` drives the build endpoints. Change them only together with Bill. The tests named
+`TestContract…` pin each clause.
+
+- **Errors.** Every error body is `{"error": {"code", "message"}}`. A quota error adds `retry_after_seconds` and a
+  `Retry-After` header.
+- **Local-only scope.** A request with `X-AI-Gateway-Scope: local` is shown to local models only, helper calls
+  included, whatever its content. Every response to it carries the header back; with no local model free it is
+  refused with `403 no_local_provider` before anything is sent. A build keeps the scope it was created with. Any other
+  value is `400 bad_scope`.
+- **Status line.** A vote's reply is one line starting `[ai-gateway ` and ending `]` (at most 300 characters, never
+  inside a code fence), one empty line, then the body. With a majority the body is its code in one fence; without
+  one it is every candidate, each in its own fence under a `### candidate N, from …` heading.
+- **Streaming.** The response headers go out before the vote starts. Until the first data event a comment line
+  `: keep-alive` is sent every 10 seconds. Then one content delta, a chunk with `finish_reason: "stop"`, and
+  `data: [DONE]`. A failure after the headers is `data: {"error": {"code", "message"}}` then `[DONE]`, with code
+  `vote_failed`, `no_provider`, `timeout` or `local_failed`. A vote waits at most 150 seconds for its agents. When
+  the client disconnects, the agents still working are stopped.
+- **Builds.** `status` is `running`, `done` (every part written), `partial` or `failed` (nothing usable). Each part
+  has `id`, `status` (`pending`, `running`, `done`, `failed`, `missing`), `author`, `code`, `error`, `attempts` and
+  `reworked`. `program` is empty while running; finished, it is the header, the parts in task order and the footer,
+  with a part that was not written as one comment line (`# [ai-gateway: t2 missing]`). `tests` are Python
+  expressions that call the function; a rework vote compares the candidates on them. `notes` report redactions,
+  parts kept home, reworks and cancellation.
+
+**Pointing Bill at it.** Set `BILLCAT_CODER_URL=http://127.0.0.1:8765` and `BILLCAT_CODER_TIMEOUT=180` in Bill's
+environment. Note what that changes: the task and the text of the files Bill has read then go to outside services
+instead of staying on your network, subject to the privacy rules above.
 
 ## Free API keys
 

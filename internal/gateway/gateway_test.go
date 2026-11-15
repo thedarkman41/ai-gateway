@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/thedarkman41/ai-gateway/internal/mcp"
 	"github.com/thedarkman41/ai-gateway/internal/privacy"
@@ -684,7 +685,7 @@ func TestBuildQueueAndRework(t *testing.T) {
 	for i := 1; i <= 6; i++ {
 		tasks = append(tasks, Task{ID: fmt.Sprintf("f%d", i), Prompt: "write it"})
 	}
-	id, plan, err := g.Build(tasks, "", "import os", "main()")
+	id, plan, err := g.Build(BuildSpec{Tasks: tasks, Header: "import os", Footer: "main()"})
 	if err != nil || !strings.Contains(plan, "6 tasks in the queue, 3 agents free to take them, strongest first: fast, slow, broken") {
 		t.Fatalf("build: %v\n%s", err, plan)
 	}
@@ -726,7 +727,7 @@ func TestBuildQueueAndRework(t *testing.T) {
 	if _, err := g.Collect(ctx, "../etc", time.Second); err == nil {
 		t.Error("a path was accepted as a build id")
 	}
-	if _, _, err := g.Build([]Task{{ID: "x", Prompt: "p"}, {ID: "x", Prompt: "q"}}, "", "", ""); err == nil {
+	if _, _, err := g.Build(BuildSpec{Tasks: []Task{{ID: "x", Prompt: "p"}, {ID: "x", Prompt: "q"}}}); err == nil {
 		t.Error("duplicate task ids accepted")
 	}
 }
@@ -968,7 +969,7 @@ func TestPrivacy(t *testing.T) {
 	if err != nil || v.Answers != 1 || v.Groups[0].By[0] != "home" || !strings.Contains(v.String(), "Privacy: kept on this machine, only local models were asked") {
 		t.Errorf("a private vote: %+v, %v", v, err)
 	}
-	id, _, err := g.Build([]Task{{ID: "open", Prompt: "write a"}, {ID: "closed", Prompt: private}}, "", "", "")
+	id, _, err := g.Build(BuildSpec{Tasks: []Task{{ID: "open", Prompt: "write a"}, {ID: "closed", Prompt: private}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1012,5 +1013,310 @@ func TestHealthMatchesBillsCheck(t *testing.T) {
 	down := build(t, `{"providers":[{"id":"gone","tier":"B","kind":"cli","bin":"no-such-binary-xyz","ask_args":["{prompt}"]}]}`)
 	if code, ct, body := get(down); code != 503 || ct != "application/json" || body["ok"] != false || body["state"] == "" {
 		t.Errorf("no agent: %d %s %v", code, ct, body)
+	}
+}
+
+// ---- the contract shared with Bill (phase12-gateway-contract.md, v1) ----
+
+type httpReply struct {
+	code   int
+	header http.Header
+	body   string
+}
+
+func call(t *testing.T, srv *httptest.Server, method, path, body string, headers ...string) httpReply {
+	t.Helper()
+	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return httpReply{resp.StatusCode, resp.Header, string(b)}
+}
+
+func errorCode(t *testing.T, r httpReply) string {
+	t.Helper()
+	var e struct {
+		Error struct{ Code, Message string }
+	}
+	if !strings.Contains(r.header.Get("Content-Type"), "application/json") || json.Unmarshal([]byte(r.body), &e) != nil || e.Error.Message == "" {
+		t.Errorf("an error must be JSON {error:{code,message}}; got %d %s %q", r.code, r.header.Get("Content-Type"), r.body)
+	}
+	return e.Error.Code
+}
+
+// A. Local-only scope.
+func TestContractScope(t *testing.T) {
+	t.Setenv("AI_GATEWAY_VOTE", "text")
+	outside, home := &fake{}, &fake{}
+	so, sh := outside.server(t), home.server(t)
+	withLocal := build(t, fmt.Sprintf(`{"providers":[
+		{"id":"out","tier":"K","kind":"openai","strength":9,"url":"%s/chat","default_model":"live"},
+		{"id":"home","tier":"L","kind":"openai","strength":4,"local":true,"url":"%s/chat","default_model":"live"}]}`, so.URL, sh.URL))
+	srv := httptest.NewServer(withLocal.OpenAIHandler())
+	defer srv.Close()
+	chat := `{"model":"coder","messages":[{"role":"user","content":"TASK:\nwrite f"}]}`
+
+	// Scoped: only the local model is asked, helper calls included, and the header comes back.
+	r := call(t, srv, "POST", "/v1/chat/completions", chat, scopeHeader, "LOCAL")
+	if r.code != 200 || r.header.Get(scopeHeader) != "local" || outside.count() != 0 || home.count() == 0 {
+		t.Errorf("scoped vote: %d echo=%q outside=%d home=%d %s", r.code, r.header.Get(scopeHeader), outside.count(), home.count(), r.body)
+	}
+	// Unscoped: no echo, and the outside model may be asked.
+	if r := call(t, srv, "POST", "/v1/chat/completions", chat); r.code != 200 || r.header.Get(scopeHeader) != "" || outside.count() == 0 {
+		t.Errorf("unscoped vote: %d echo=%q outside=%d", r.code, r.header.Get(scopeHeader), outside.count())
+	}
+	// Any other value is refused.
+	if r := call(t, srv, "POST", "/v1/chat/completions", chat, scopeHeader, "team"); r.code != 400 || errorCode(t, r) != "bad_scope" {
+		t.Errorf("bad scope: %d %s", r.code, r.body)
+	}
+
+	// No local provider: 403 before anything is sent, with the echo, on chat (streamed too) and on builds.
+	noLocal := build(t, fmt.Sprintf(`{"providers":[{"id":"out","tier":"K","kind":"openai","url":"%s/chat","default_model":"live"}]}`, so.URL))
+	srv2 := httptest.NewServer(noLocal.OpenAIHandler())
+	defer srv2.Close()
+	before := outside.count()
+	for _, body := range []string{chat, strings.Replace(chat, `"messages"`, `"stream":true,"messages"`, 1)} {
+		if r := call(t, srv2, "POST", "/v1/chat/completions", body, scopeHeader, "local"); r.code != 403 || errorCode(t, r) != "no_local_provider" || r.header.Get(scopeHeader) != "local" {
+			t.Errorf("scoped with no local model: %d echo=%q %s", r.code, r.header.Get(scopeHeader), r.body)
+		}
+	}
+	if r := call(t, srv2, "POST", "/v1/builds", `{"language":"python","tasks":[{"id":"t1","prompt":"p"}]}`, scopeHeader, "local"); r.code != 403 || errorCode(t, r) != "no_local_provider" || r.header.Get(scopeHeader) != "local" {
+		t.Errorf("scoped build with no local model: %d %s", r.code, r.body)
+	}
+	if outside.count() != before {
+		t.Error("an outside model was asked on a local-only request")
+	}
+
+	// A scoped build keeps its scope: the GET echoes it and a rework without the header stays local.
+	r = call(t, srv, "POST", "/v1/builds", `{"language":"python","tasks":[{"id":"t1","prompt":"write t1"}]}`, scopeHeader, "local")
+	var made struct {
+		ID string `json:"build_id"`
+	}
+	json.Unmarshal([]byte(r.body), &made)
+	if r.code != 202 || made.ID == "" || r.header.Get(scopeHeader) != "local" {
+		t.Fatalf("scoped build: %d %s", r.code, r.body)
+	}
+	before = outside.count()
+	if r := call(t, srv, "GET", "/v1/builds/"+made.ID+"?wait=20", ""); r.code != 200 || r.header.Get(scopeHeader) != "local" || !strings.Contains(r.body, `"author":"home"`) {
+		t.Errorf("GET of a scoped build: %d echo=%q %s", r.code, r.header.Get(scopeHeader), r.body)
+	}
+	if r := call(t, srv, "POST", "/v1/builds/"+made.ID+"/rework", `{"failures":[{"id":"t1","error":"boom"}]}`); r.code != 202 || r.header.Get(scopeHeader) != "local" {
+		t.Errorf("rework of a scoped build: %d echo=%q %s", r.code, r.header.Get(scopeHeader), r.body)
+	}
+	call(t, srv, "GET", "/v1/builds/"+made.ID+"?wait=20", "")
+	if outside.count() != before {
+		t.Error("an outside model saw part of a scoped build")
+	}
+}
+
+// B. The status line.
+func TestContractStatusLine(t *testing.T) {
+	check := func(reply string) (line, body string) {
+		t.Helper()
+		line, rest, _ := strings.Cut(reply, "\n")
+		blank, body, _ := strings.Cut(rest, "\n")
+		if !strings.HasPrefix(line, "[ai-gateway ") || !strings.HasSuffix(line, "]") || utf8.RuneCountInString(line) > 300 || blank != "" || strings.Count(reply, "[ai-gateway ") != 1 {
+			t.Errorf("status line breaks the contract: %q then %q", line, blank)
+		}
+		return line, body
+	}
+	long := strings.Repeat("a-very-long-agent-name, ", 30)
+	line, body := check(voteReply(Verdict{Majority: true, Answers: 5, Method: "compared by behaviour on 12 test calls to f", Redacted: "2 secrets (api-key)",
+		Groups: []Group{{Text: "def f():\n    return 1", By: []string{"a", "b", long}}}}))
+	if !strings.Contains(line, "majority, 3 of 5 agree") || !strings.HasSuffix(line, "…]") || body != "```python\ndef f():\n    return 1\n```\n" {
+		t.Errorf("majority: %q / %q", line, body)
+	}
+	line, body = check(voteReply(Verdict{Answers: 2, Method: "compared as text", Private: "x.py is in a blocked directory [/srv]\nsecond line",
+		Diffs: []string{"f(1): candidate 1 gives 1, candidate 2 gives 2"}, Groups: []Group{{Text: "x = 1", By: []string{"a"}}, {Text: "x = 2", By: []string{"b"}}}}))
+	if !strings.Contains(line, "no majority among 2 answers") || !strings.Contains(line, "Privacy: kept on this machine") || strings.Count(body, "### candidate") != 2 || !strings.Contains(body, "x = 2") || !strings.Contains(body, "Where they differ") {
+		t.Errorf("no majority: %q / %q", line, body)
+	}
+}
+
+// C. Streaming: headers before the work, keep-alive comments until the first data event, then the
+// answer; a failure after the headers is an error event; a disconnect stops the agents.
+func TestContractStreaming(t *testing.T) {
+	t.Setenv("AI_GATEWAY_VOTE", "text")
+	old := keepAliveEvery
+	keepAliveEvery = 60 * time.Millisecond
+	defer func() { keepAliveEvery = old }()
+	g := build(t, agents(agent("a", 9, 0.5, "x = 1"), agent("b", 8, 0.5, "x = 1"), agent("c", 7, 0.5, "x = 1")))
+	srv := httptest.NewServer(g.OpenAIHandler())
+	defer srv.Close()
+	body := `{"model":"coder","stream":true,"messages":[{"role":"user","content":"write x"}]}`
+
+	start := time.Now()
+	resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 300*time.Millisecond || resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" || resp.Header.Get("Cache-Control") != "no-cache" {
+		t.Errorf("headers must arrive before the vote: after %s, %d %v", d, resp.StatusCode, resp.Header)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	stream := string(raw)
+	first := strings.Index(stream, "data: ")
+	if n := strings.Count(stream[:first], ": keep-alive\n\n"); n < 3 || strings.Contains(stream[first:], ": keep-alive") {
+		t.Errorf("want keep-alives before the first data event and none after; got %d before:\n%s", n, stream)
+	}
+	if !strings.Contains(stream, `[ai-gateway vote: majority, 3 of 3 agree`) || !strings.Contains(stream, `"finish_reason":"stop"`) || !strings.HasSuffix(stream, "data: [DONE]\n\n") {
+		t.Errorf("stream:\n%s", stream)
+	}
+
+	// A vote that fails after the headers: an error event, then [DONE].
+	bad := build(t, agents(`{"id":"broken","tier":"B","kind":"cli","bin":"sh","preamble":"","ask_args":["-c","exit 1","{prompt}"]}`))
+	srv2 := httptest.NewServer(bad.OpenAIHandler())
+	defer srv2.Close()
+	r := call(t, srv2, "POST", "/v1/chat/completions", body)
+	if r.code != 200 || !strings.Contains(r.body, `data: {"error":{"code":"vote_failed","message":`) || !strings.HasSuffix(r.body, "data: [DONE]\n\n") {
+		t.Errorf("failed vote: %d\n%s", r.code, r.body)
+	}
+	// The same failure, not streamed, is a proper HTTP error.
+	if r := call(t, srv2, "POST", "/v1/chat/completions", strings.Replace(body, `"stream":true,`, "", 1)); r.code != 503 || errorCode(t, r) != "vote_failed" {
+		t.Errorf("failed vote, not streamed: %d %s", r.code, r.body)
+	}
+
+	// A client that hangs up stops the outstanding agent calls.
+	marker := filepath.Join(t.TempDir(), "finished")
+	slow := build(t, agents(fmt.Sprintf(`{"id":"slow","tier":"B","kind":"cli","bin":"sh","preamble":"","ask_args":["-c","sleep 2; touch %s; echo late","{prompt}"]}`, marker)))
+	srv3 := httptest.NewServer(slow.OpenAIHandler())
+	defer srv3.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", srv3.URL+"/v1/chat/completions", strings.NewReader(body))
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the agent kept running after the client disconnected")
+	}
+}
+
+// D. Builds over HTTP.
+func TestContractBuilds(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is not installed")
+	}
+	t.Setenv("AI_GATEWAY_UNSANDBOXED", "1")
+	g := build(t, agents(
+		agent("a", 9, 0.05, "import re\n\ndef slugify(s):\n    return re.sub('[^a-z0-9]+', '-', s.lower())"),
+		agent("b", 8, 0.05, "import re\n\ndef slugify(s):\n    return re.sub(r'[^a-z0-9]+', '-', s.lower())"),
+		agent("c", 7, 0.05, "def slugify(s):\n    return s"),
+		`{"id":"broken","tier":"B","kind":"cli","bin":"sh","strength":1,"preamble":"","ask_args":["-c","exit 1","{prompt}"]}`))
+	g.SetJobsDir(t.TempDir())
+	srv := httptest.NewServer(g.OpenAIHandler())
+	defer srv.Close()
+
+	// Bad requests name the field; unknown builds are 404; every error is JSON with a code.
+	for body, field := range map[string]string{
+		`{"tasks":[{"id":"t1","prompt":"p"}]}`:                                              "language",
+		`{"language":"python","tasks":[]}`:                                                  "tasks",
+		`{"language":"python","tasks":[{"id":"bad id","prompt":"p"}]}`:                      "tasks[0].id",
+		`{"language":"python","tasks":[{"id":"t1","prompt":"p"},{"id":"t1","prompt":"p"}]}`: "tasks[1].id",
+		`{"language":"python","tasks":[{"id":"t1","prompt":" "}]}`:                          "tasks[0].prompt",
+		`not json`: "body",
+	} {
+		if r := call(t, srv, "POST", "/v1/builds", body); r.code != 400 || errorCode(t, r) != "bad_request" || !strings.Contains(r.body, `"message":"`+field+":") {
+			t.Errorf("%s: %d %s", field, r.code, r.body)
+		}
+	}
+	if r := call(t, srv, "GET", "/v1/builds/b_nope", ""); r.code != 404 || errorCode(t, r) != "unknown_build" {
+		t.Errorf("unknown build: %d %s", r.code, r.body)
+	}
+	if r := call(t, srv, "GET", "/v1/nothing", ""); r.code != 404 || errorCode(t, r) != "not_found" {
+		t.Errorf("unknown endpoint: %d %s", r.code, r.body)
+	}
+
+	r := call(t, srv, "POST", "/v1/builds", `{"language":"python","header":"import os","footer":"print(slugify('A b'))","context":"Shared notes.",
+		"tasks":[{"id":"t1","prompt":"Write slugify(s).","tests":["slugify('A b')","slugify('x')"]},{"id":"t2","prompt":"Write slugify(s) again."}]}`)
+	var made struct {
+		ID     string `json:"build_id"`
+		Status string
+		Tasks  int
+	}
+	json.Unmarshal([]byte(r.body), &made)
+	if r.code != 202 || !strings.HasPrefix(made.ID, "b_") || made.Status != "running" || made.Tasks != 2 {
+		t.Fatalf("create: %d %s", r.code, r.body)
+	}
+	if r := call(t, srv, "POST", "/v1/builds/"+made.ID+"/rework", `{"failures":[{"id":"t1","error":"x"}]}`); r.code != 409 || errorCode(t, r) != "build_running" {
+		t.Errorf("rework while running: %d %s", r.code, r.body)
+	}
+	view := func(wait string) BuildView {
+		t.Helper()
+		r := call(t, srv, "GET", "/v1/builds/"+made.ID+wait, "")
+		var v BuildView
+		if r.code != 200 || json.Unmarshal([]byte(r.body), &v) != nil {
+			t.Fatalf("get: %d %s", r.code, r.body)
+		}
+		for _, key := range []string{`"build_id"`, `"status"`, `"language"`, `"program"`, `"parts"`, `"notes"`, `"elapsed_seconds"`, `"code"`, `"error"`, `"attempts"`, `"reworked"`, `"author"`} {
+			if !strings.Contains(r.body, key) {
+				t.Errorf("the reply lacks %s: %s", key, r.body)
+			}
+		}
+		return v
+	}
+	v := view("?wait=20")
+	if v.Status != "done" || v.Language != "python" || len(v.Parts) != 2 || v.Parts[0].ID != "t1" || v.Parts[0].Status != "done" || v.Parts[0].Author != "a" ||
+		!strings.Contains(v.Parts[0].Code, "def slugify") || v.Parts[0].Error != nil || v.Parts[0].Reworked || v.Parts[0].Attempts != 1 {
+		t.Errorf("done build: %+v", v)
+	}
+	if !strings.HasPrefix(v.Program, "import os\n\nimport re\n\ndef slugify") || !strings.HasSuffix(v.Program, "print(slugify('A b'))") {
+		t.Errorf("program:\n%s", v.Program)
+	}
+
+	// Rework: 202, then polled; the part is rewritten by vote on its own test expressions.
+	r = call(t, srv, "POST", "/v1/builds/"+made.ID+"/rework", `{"failures":[{"id":"t1","error":"AssertionError: slugify('A b') gave 'A b'"}]}`)
+	if r.code != 202 || !strings.Contains(r.body, `"reworking":["t1"]`) || !strings.Contains(r.body, `"status":"running"`) {
+		t.Fatalf("rework: %d %s", r.code, r.body)
+	}
+	if r := call(t, srv, "POST", "/v1/builds/"+made.ID+"/rework", `{"failures":[{"id":"nope","error":"x"}]}`); r.code != 409 && r.code != 400 {
+		t.Errorf("rework of an unknown task: %d %s", r.code, r.body)
+	}
+	v = view("?wait=30")
+	if v.Status != "done" || !v.Parts[0].Reworked || v.Parts[0].Author != "a" || v.Parts[1].Reworked || v.Parts[0].Attempts != 2 {
+		t.Errorf("after rework: %+v", v)
+	}
+	if len(v.Notes) == 0 || !strings.Contains(v.Notes[0], "reworked t1: majority, 2 of 3 agree (a, b)") {
+		t.Errorf("notes: %v", v.Notes)
+	}
+
+	// A build nobody can write: status failed, each part one comment line in the program.
+	bad := build(t, agents(`{"id":"broken","tier":"B","kind":"cli","bin":"sh","preamble":"","ask_args":["-c","exit 1","{prompt}"]}`))
+	srv2 := httptest.NewServer(bad.OpenAIHandler())
+	defer srv2.Close()
+	r = call(t, srv2, "POST", "/v1/builds", `{"language":"go","tasks":[{"id":"t1","prompt":"p"},{"id":"t2","prompt":"p"}]}`)
+	json.Unmarshal([]byte(r.body), &made)
+	r = call(t, srv2, "GET", "/v1/builds/"+made.ID+"?wait=20", "")
+	var fv BuildView
+	json.Unmarshal([]byte(r.body), &fv)
+	if fv.Status != "failed" || fv.Program != "// [ai-gateway: t1 missing]\n\n// [ai-gateway: t2 missing]" || fv.Parts[0].Error == nil || (fv.Parts[0].Status != "missing" && fv.Parts[0].Status != "failed") {
+		t.Errorf("failed build: %+v\n%s", fv, r.body)
+	}
+
+	// DELETE cancels; what was written is kept.
+	slow := build(t, agents(agent("slow", 9, 3, "x = 1")))
+	srv3 := httptest.NewServer(slow.OpenAIHandler())
+	defer srv3.Close()
+	r = call(t, srv3, "POST", "/v1/builds", `{"language":"python","tasks":[{"id":"t1","prompt":"p"}]}`)
+	json.Unmarshal([]byte(r.body), &made)
+	start := time.Now()
+	if r := call(t, srv3, "DELETE", "/v1/builds/"+made.ID, ""); r.code != 204 {
+		t.Errorf("delete: %d %s", r.code, r.body)
+	}
+	r = call(t, srv3, "GET", "/v1/builds/"+made.ID+"?wait=10", "")
+	if time.Since(start) > 2500*time.Millisecond || !strings.Contains(r.body, `"cancelled"`) || strings.Contains(r.body, `"status":"running"`) {
+		t.Errorf("after delete (%s): %s", time.Since(start), r.body)
+	}
+	if r := call(t, srv, "GET", "/v1/builds/"+made.ID+"?wait=abc", ""); r.code != 400 && r.code != 404 {
+		t.Errorf("bad wait: %d", r.code)
 	}
 }

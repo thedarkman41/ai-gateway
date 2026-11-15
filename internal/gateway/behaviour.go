@@ -162,7 +162,7 @@ type outcome struct {
 
 // behaviour runs every candidate on the same calls. contextCode is run first in each (the imports
 // and helper functions a part of a larger program relies on).
-func behaviour(ctx context.Context, votes []Vote, name, contextCode string, inputs [][]any) ([]outcome, error) {
+func behaviour(ctx context.Context, votes []Vote, name, contextCode string, inputs [][]any, exprs []string) ([]outcome, error) {
 	dir, err := os.MkdirTemp("", "aigw-vote-")
 	if err != nil {
 		return nil, err
@@ -171,7 +171,17 @@ func behaviour(ctx context.Context, votes []Vote, name, contextCode string, inpu
 	if real, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = real
 	}
-	in, _ := json.Marshal(inputs)
+	if inputs == nil {
+		inputs = [][]any{}
+	}
+	if exprs == nil {
+		exprs = []string{}
+	}
+	want := len(inputs)
+	if len(exprs) > 0 { // expressions replace argument lists
+		want = len(exprs)
+	}
+	in, _ := json.Marshal(map[string]any{"args": inputs, "exprs": exprs})
 	files := map[string]string{"harness.py": harness, "inputs.json": string(in), "context.py": contextCode}
 	for i, v := range votes {
 		files[fmt.Sprintf("cand%d.py", i)] = v.Text
@@ -199,7 +209,7 @@ func behaviour(ctx context.Context, votes []Vote, name, contextCode string, inpu
 			var stderr strings.Builder
 			cmd.Stderr = &stderr
 			b, err := cmd.Output()
-			if json.Unmarshal(lastLine(b), &outs[i]) != nil || (outs[i].Error == "" && len(outs[i].Outcomes) != len(inputs)) {
+			if json.Unmarshal(lastLine(b), &outs[i]) != nil || (outs[i].Error == "" && len(outs[i].Outcomes) != want) {
 				why := "produced no result"
 				switch {
 				case cctx.Err() != nil:

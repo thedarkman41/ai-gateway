@@ -280,7 +280,7 @@ func runBuild(ctx context.Context, args []string) {
 		tasks = append(tasks, gateway.Task{ID: fmt.Sprintf("task%d", i+1), Prompt: p})
 	}
 	start := time.Now()
-	id, plan, err := g.Build(tasks, "", *header, "")
+	id, plan, err := g.Build(gateway.BuildSpec{Tasks: tasks, Header: *header})
 	if err != nil {
 		log.Fatal(err)
 	}

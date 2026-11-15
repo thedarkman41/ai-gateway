@@ -59,7 +59,10 @@ func (g *Gateway) logf(format string, a ...any) {
 
 // private says why a prompt must stay on this machine, or "". Rules that cannot be read count as a
 // reason: when in doubt nothing leaves.
-func (g *Gateway) private(texts ...string) string {
+func (g *Gateway) private(ctx context.Context, texts ...string) string {
+	if localOnly(ctx) {
+		return "the caller asked for local models only"
+	}
 	pol, err := g.privacy.Policy()
 	if err != nil {
 		return "the privacy rules could not be read (" + err.Error() + ")"
@@ -141,7 +144,7 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 	for _, m := range msgs {
 		texts = append(texts, m.Content)
 	}
-	private := g.private(texts...)
+	private := g.private(ctx, texts...)
 	if private != "" {
 		var local []provider.Provider
 		for _, p := range candidates {
@@ -150,7 +153,7 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 			}
 		}
 		if len(local) == 0 {
-			return Answer{}, fmt.Errorf("kept on this machine: %s. Only a local model may see it, and none can take it here", private)
+			return Answer{}, &Problem{Status: 403, Code: "no_local_provider", Message: fmt.Sprintf("kept on this machine: %s. Only a local model may see it, and none can take it here", private)}
 		}
 		candidates = local
 	}

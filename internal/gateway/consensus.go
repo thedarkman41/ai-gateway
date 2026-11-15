@@ -86,6 +86,7 @@ type Request struct {
 	Agents  int           // how many vote (default 5)
 	Context string        // code the function relies on: imports and helpers, run before each candidate
 	Tests   [][]any       // test calls to compare the candidates on; empty = ask a model for some
+	Exprs   []string      // or test expressions, e.g. "slugify('A b')": evaluated against each candidate instead of Tests
 	Within  time.Duration // stop waiting for agents after this long and decide among those that answered; 0 = wait for all
 }
 
@@ -100,13 +101,13 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 		n = defaultVoters
 	}
 	n = min(n, maxVoters)
-	private := g.private(system, prompt)
+	private := g.private(ctx, system, prompt)
 	pool := g.ranked(private != "")
 	if len(pool) == 0 && private != "" {
-		return Verdict{}, fmt.Errorf("kept on this machine: %s. Only a local model may see it, and none is free", private)
+		return Verdict{}, &Problem{Status: 403, Code: "no_local_provider", Message: fmt.Sprintf("kept on this machine: %s. Only a local model may see it, and none is free", private)}
 	}
 	if len(pool) == 0 {
-		return Verdict{}, errors.New("no agent is free right now; see list_models")
+		return Verdict{}, g.noAgent(false)
 	}
 	rank := map[string]int{}
 	for i, p := range pool {
@@ -129,6 +130,8 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 	// While the agents write, a fast model writes test calls to compare their answers on.
 	inputs := make(chan [][]any, 1)
 	switch {
+	case len(r.Exprs) > 0: // the caller gave test expressions: nothing to write
+		inputs <- nil
 	case len(r.Tests) > 0:
 		inputs <- r.Tests[:min(len(r.Tests), maxTestCalls)]
 	case strings.Contains(strings.ToLower(prompt+" "+system), "python"):
@@ -175,7 +178,14 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 	}
 	wg.Wait()
 	if len(votes) == 0 {
-		return v, fmt.Errorf("no agent answered:\n- %s", strings.Join(v.Failed, "\n- "))
+		code := "vote_failed"
+		switch {
+		case askCtx.Err() != nil && ctx.Err() == nil:
+			code = "timeout"
+		case private != "":
+			code = "local_failed"
+		}
+		return v, &Problem{Status: 503, Code: code, Message: fmt.Sprintf("no agent answered:\n- %s", strings.Join(v.Failed, "\n- "))}
 	}
 
 	// Group the answers. Python functions are grouped by what they do on the same test calls; anything
@@ -190,11 +200,12 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 	if isPython(votes) && os.Getenv("AI_GATEWAY_VOTE") != "text" { // that setting turns running candidates off
 		name, arity := target(votes, prompt)
 		calls := <-inputs
-		if len(calls) == 0 {
+		exprs := r.Exprs[:min(len(r.Exprs), maxTestCalls)]
+		if len(calls) == 0 && len(exprs) == 0 {
 			calls = defaultInputs(arity)
 		}
 		var err error
-		if outs, err = behaviour(ctx, votes, name, r.Context, calls); err != nil {
+		if outs, err = behaviour(ctx, votes, name, r.Context, calls, exprs); err != nil {
 			v.Method = "compared as text (the candidates could not be run: " + provider.Short(err.Error()) + ")"
 		} else if bk, inf := behaviourKeys(outs); len(inf) == 0 {
 			v.Method = "compared as text (no test call gave a result to compare)"
@@ -202,6 +213,9 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 		} else {
 			keys, informative = bk, inf
 			v.Method = fmt.Sprintf("compared by behaviour on %d test calls to %s", len(inf), name)
+			if len(exprs) > 0 {
+				v.Method = fmt.Sprintf("compared by behaviour on %d test expressions", len(inf))
+			}
 		}
 	}
 	index := map[string]int{} // provider → position in votes, to find its outcomes later

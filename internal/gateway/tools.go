@@ -159,7 +159,7 @@ func (g *Gateway) Tools() []mcp.Tool {
 				if err := json.Unmarshal(raw, &tasks); err != nil {
 					return "", fmt.Errorf("tasks must be a list of {id, prompt}: %v", err)
 				}
-				_, plan, err := g.Build(tasks, arg(a, "system"), arg(a, "header"), arg(a, "footer"))
+				_, plan, err := g.Build(BuildSpec{Tasks: tasks, System: arg(a, "system"), Header: arg(a, "header"), Footer: arg(a, "footer")})
 				return plan, err
 			},
 		},

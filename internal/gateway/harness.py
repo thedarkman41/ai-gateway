@@ -34,11 +34,14 @@ def finish(result):
     os._exit(0)
 
 
+tests = json.load(open(inputs_path))
+exprs = tests.get("exprs") or []
+
 ns = {"__name__": "candidate"}
 try:
     exec(compile(open(ctx_path).read(), "context", "exec"), ns)
     exec(compile(open(cand).read(), "candidate", "exec"), ns)
-    fn = ns[name]
+    fn = None if exprs else ns[name]
 except KeyError:
     finish({"error": "does not define " + name})
 except BaseException as e:
@@ -55,11 +58,13 @@ def on_alarm(*_):
 
 signal.signal(signal.SIGALRM, on_alarm)
 calls, outcomes = [], []
-for args in json.load(open(inputs_path)):
-    calls.append(name + "(" + ", ".join(repr(a) for a in args) + ")")
+# Either test expressions, each evaluated in the candidate's namespace, or argument lists for the
+# named function.
+for test in exprs or tests.get("args") or []:
+    calls.append(test if exprs else name + "(" + ", ".join(repr(a) for a in test) + ")")
     try:
         signal.setitimer(signal.ITIMER_REAL, 2.0)
-        result = fn(*copy.deepcopy(args))
+        result = eval(compile(test, "test", "eval"), ns) if exprs else fn(*copy.deepcopy(test))
         text = norm(result)
         signal.setitimer(signal.ITIMER_REAL, 0)
         outcomes.append(text)

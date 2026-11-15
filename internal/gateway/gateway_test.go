@@ -684,7 +684,7 @@ func TestBuildQueueAndRework(t *testing.T) {
 		tasks = append(tasks, Task{ID: fmt.Sprintf("f%d", i), Prompt: "write it"})
 	}
 	id, plan, err := g.Build(tasks, "", "import os", "main()")
-	if err != nil || !strings.Contains(plan, "6 tasks in the queue, 3 agents taking them, strongest first: fast, slow, broken") {
+	if err != nil || !strings.Contains(plan, "6 tasks in the queue, 3 agents free to take them, strongest first: fast, slow, broken") {
 		t.Fatalf("build: %v\n%s", err, plan)
 	}
 	if out, _ := g.Collect(ctx, id, 50*time.Millisecond); !strings.Contains(out, "is still running") {
@@ -799,5 +799,24 @@ func TestBehaviourVote(t *testing.T) {
 	v, _ = g.Consensus(ctx, Request{Prompt: "Write a Python function is_prime(n).", Agents: 3})
 	if !v.Majority || !strings.Contains(v.Method, "on 3 test calls") || strings.Join(v.Groups[0].By, ",") != "a,b" {
 		t.Errorf("model-written calls: %s %+v", v.Method, v.Groups)
+	}
+}
+
+// Each agent writes its own imports; the assembled Python program has them once, at the top.
+func TestBuildHoistsPythonImports(t *testing.T) {
+	imports, rest := hoistImports("import os\nLIMIT = 3", []string{
+		"import re\nfrom collections import Counter\n\ndef a(s):\n    import json\n    return re.sub('x', 'y', s)",
+		"import re\nimport os\n\n\ndef b(s):\n    return Counter(s)",
+	})
+	if strings.Join(imports, "|") != "import re|from collections import Counter" {
+		t.Errorf("imports %q", imports)
+	}
+	if rest[0] != "def a(s):\n    import json\n    return re.sub('x', 'y', s)" || rest[1] != "def b(s):\n    return Counter(s)" {
+		t.Errorf("rest %q", rest)
+	}
+	// Code that is not Python is left exactly as written.
+	parts := []string{"import \"fmt\"\n\nfunc A() {}", "func B() {}"}
+	if imports, rest := hoistImports("", parts); imports != nil || rest[0] != parts[0] {
+		t.Errorf("non-Python parts were changed: %q %q", imports, rest)
 	}
 }

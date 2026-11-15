@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -165,7 +166,7 @@ func (g *Gateway) Build(tasks []Task, system, header, footer string) (id, plan s
 		b.finishLocked()
 		b.mu.Unlock()
 	}()
-	return b.ID, fmt.Sprintf("build %s started: %d tasks in the queue, %d agents taking them, strongest first: %s",
+	return b.ID, fmt.Sprintf("build %s started: %d tasks in the queue, %d agents free to take them, strongest first: %s",
 		b.ID, len(tasks), len(names), strings.Join(names, ", ")), nil
 }
 
@@ -325,16 +326,23 @@ func (g *Gateway) Collect(ctx context.Context, id string, wait time.Duration) (s
 	if strings.TrimSpace(b.Header) != "" {
 		code = append(code, strings.TrimRight(b.Header, "\n"))
 	}
-	var record, missing []string
+	var record, missing, bodies []string
 	for _, t := range b.Tasks {
 		if why, gone := b.Missing[t.ID]; gone {
 			missing = append(missing, t.ID+" ("+why+")")
 			continue
 		}
 		p := b.Parts[t.ID]
-		code = append(code, p.Text)
+		bodies = append(bodies, p.Text)
 		record = append(record, fmt.Sprintf("- %s: %s", t.ID, p.By))
 	}
+	// Each agent writes the imports its own function needs. In Python they are gathered at the
+	// top, once each, instead of being scattered through the file.
+	if imports, rest := hoistImports(b.Header, bodies); len(imports) > 0 {
+		code = append(code, strings.Join(imports, "\n"))
+		bodies = rest
+	}
+	code = append(code, bodies...)
 	if strings.TrimSpace(b.Footer) != "" {
 		code = append(code, strings.TrimRight(b.Footer, "\n"))
 	}
@@ -346,6 +354,42 @@ func (g *Gateway) Collect(ctx context.Context, id string, wait time.Duration) (s
 	fmt.Fprintf(&out, "Who wrote what:\n%s\n\nCheck the program (compile it, run its tests). For each part that fails, call rework with the task id and the error.\n\n===== program =====\n%s\n",
 		strings.Join(record, "\n"), strings.Join(code, "\n\n"))
 	return out.String(), nil
+}
+
+var importRe = regexp.MustCompile(`^(import\s+\S|from\s+\S+\s+import\s)`)
+
+// hoistImports takes the top-level import lines out of Python parts and returns them once each, in
+// first-seen order, leaving out any the header already has. Parts that are not Python are returned
+// untouched with no imports.
+func hoistImports(header string, parts []string) (imports []string, rest []string) {
+	python := 0
+	for _, p := range parts {
+		if defRe.MatchString(p) {
+			python++
+		}
+	}
+	if python*2 <= len(parts) {
+		return nil, parts
+	}
+	seen := map[string]bool{}
+	for _, l := range strings.Split(header, "\n") {
+		seen[strings.TrimSpace(l)] = true
+	}
+	for _, p := range parts {
+		var kept []string
+		for _, l := range strings.Split(p, "\n") {
+			if importRe.MatchString(l) { // column 0 only: an import inside a function stays where it is
+				if key := strings.TrimSpace(l); !seen[key] {
+					seen[key] = true
+					imports = append(imports, key)
+				}
+				continue
+			}
+			kept = append(kept, l)
+		}
+		rest = append(rest, strings.Trim(strings.Join(kept, "\n"), "\n"))
+	}
+	return imports, rest
 }
 
 func (g *Gateway) find(id string) (*buildJob, error) {

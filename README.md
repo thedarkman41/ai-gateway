@@ -24,8 +24,8 @@ not written yet.
 
 | Provider | Tier | Route | On betelgeuse |
 |---|---|---|---|
-| gemini-cli | S | `gemini -p -m`, signed in with Google | answered in a vote on a flash model; a run with no model named hangs, so only flash models are listed |
-| antigravity-opus, antigravity-sonnet, antigravity-argon | S | `agy -p --model`, signed in with Google | answered, three side by side in a vote |
+| gemini-cli | S | `gemini -p -m`, signed in with Google | disabled: since the CLI updated to 0.68, headless runs hang until killed; Antigravity covers the same models |
+| antigravity-opus, antigravity-sonnet, antigravity-argon | S | `agy -p --model`, signed in with Google | answered, in votes and in a build |
 | antigravity-hydrogen | S | same | not yet called |
 | pollinations | A | OpenAI-compatible endpoint | answered |
 | llm7 | A | OpenAI-compatible endpoint | answered; only its keyless chat models are used |
@@ -117,7 +117,7 @@ gateway does not run them and compares text instead. `AI_GATEWAY_VOTE=text` turn
 **A program: a greedy queue.** `build` takes one task per function. Every free agent takes a task from the queue,
 strongest first, and takes another the moment it finishes, so faster agents write more of the program. A task that
 fails goes back to the front of the queue for a different agent; an agent that fails twice running leaves. `collect`
-returns the parts as one program, in task order, between the header and footer Bill supplied.
+returns the parts as one program, in task order, between the header and footer Bill supplied. For Python, the import lines each agent wrote are gathered once at the top.
 
 **Check, then rework.** Bill compiles and tests the program. Each function that fails goes to `rework` with its
 error: it is rewritten by the same five-agent vote, with the error and the rejected code in the prompt, and the

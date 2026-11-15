@@ -24,8 +24,9 @@ not written yet.
 
 | Provider | Tier | Route | On betelgeuse |
 |---|---|---|---|
-| gemini-cli | S | `gemini -p`, signed in with Google | answered earlier on a free API key; now set to use the signed-in account (Google AI Pro), not yet re-run |
-| antigravity-opus, antigravity-sonnet, antigravity-argon, antigravity-hydrogen | S | `agy -p --model`, signed in with Google | the CLI answered on its default model; one entry per model so each can vote and take tasks on its own, the four not yet called |
+| gemini-cli | S | `gemini -p -m`, signed in with Google | answered in a vote on a flash model; a run with no model named hangs, so only flash models are listed |
+| antigravity-opus, antigravity-sonnet, antigravity-argon | S | `agy -p --model`, signed in with Google | answered, three side by side in a vote |
+| antigravity-hydrogen | S | same | not yet called |
 | pollinations | A | OpenAI-compatible endpoint | answered |
 | llm7 | A | OpenAI-compatible endpoint | answered; only its keyless chat models are used |
 | opencode | B | `opencode run -m` | free allowance spent each time it was checked |

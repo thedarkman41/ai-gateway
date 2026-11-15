@@ -2,3 +2,6 @@
 /survey/
 *.log
 .DS_Store
+__pycache__/
+*.pyc
+textkit_build.py

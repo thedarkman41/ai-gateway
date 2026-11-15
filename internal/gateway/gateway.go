@@ -171,7 +171,7 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 		switch {
 		case lastErr == nil:
 			notes = append(notes, id+": every model is resting; see list_models")
-		case !rested:
+		case !rested && ctx.Err() == nil: // a caller that stopped waiting is not the provider's failure
 			g.ledger.Result(id, "", lastErr, g.now())
 		}
 		if ctx.Err() != nil {

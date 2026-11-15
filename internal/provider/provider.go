@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -339,7 +340,11 @@ func (p *cli) Ask(ctx context.Context, r Request) (string, error) {
 	defer cleanup()
 	cmd.Dir = scratch
 	cmd.Env = childEnv(p.cfg.Env)
-	cmd.WaitDelay = 5 * time.Second
+	// The CLI gets its own process group and the whole group is killed when the caller stops
+	// waiting: these tools start helpers, and one left running would hold the output open.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 2 * time.Second
 	runErr := cmd.Run()
 	text := ansi.ReplaceAllString(stdout.String(), "")
 	for _, re := range p.strip {

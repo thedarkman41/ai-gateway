@@ -194,6 +194,18 @@ func (s *Server) HTTPHandler() http.Handler {
 	})
 }
 
+// LocalOnly wraps a handler so that it serves this machine only: a request whose Host or Origin is
+// not a loopback address is refused, which stops a web page from reaching it through the browser.
+func LocalOnly(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !local(r.Host) || (r.Header.Get("Origin") != "" && !localOrigin(r.Header.Get("Origin"))) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 func local(hostport string) bool {
 	h, _, err := net.SplitHostPort(hostport)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
@@ -12,8 +13,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -32,6 +35,8 @@ const usage = `usage: gateway <command> [flags]
   serve    run the MCP server on stdio, or on HTTP with -http 127.0.0.1:8765
   check    send a test prompt through every configured provider
   models   print the providers, their state and their models
+  service  service install | uninstall | status [-addr 127.0.0.1:8765]: run the gateway in the background
+           on this Mac (launchd), serving MCP and the OpenAI-compatible endpoint on that address
   key      key list | key set <provider> | key remove <provider>: free API keys, kept in a private
            file in the state directory, never in the config or the repository
   reset    reset [provider]: clear the rests on one provider, or on all of them
@@ -72,9 +77,11 @@ func main() {
 		}
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", srv.HTTPHandler())
+		mux.Handle("/v1/", mcp.LocalOnly(g.OpenAIHandler()))
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintln(w, "ok") })
 		hs := &http.Server{Addr: *addr, Handler: mux}
 		go func() { <-ctx.Done(); hs.Close() }()
-		log.Printf("serving MCP at http://%s/mcp", *addr)
+		log.Printf("serving on http://%s: MCP at /mcp, OpenAI-compatible chat at /v1/chat/completions, health at /healthz", *addr)
 		if err := hs.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
@@ -122,6 +129,8 @@ func main() {
 		fmt.Printf("[answered by %s]\n\n%s\n", ans.Used, ans.Text)
 	case "key":
 		runKey(os.Args[2:])
+	case "service":
+		runService(os.Args[2:])
 	case "consensus":
 		runConsensus(ctx, os.Args[2:])
 	case "build":
@@ -288,6 +297,111 @@ func runBuild(ctx context.Context, args []string) {
 func hint(key string) string {
 	key = strings.TrimSpace(key)
 	return fmt.Sprintf("(%d characters, starts %s…)", len(key), key[:min(4, len(key))])
+}
+
+const serviceLabel = "local.ai-gateway"
+
+// servicePlist is the launchd job: the gateway serving HTTP on addr, started at login and kept
+// running. launchd gives a job almost no PATH, so the PATH of the shell that installs it is written
+// in: that is where the agents' CLIs are found.
+func servicePlist(binary, addr, path, home, logFile string) string {
+	esc := func(s string) string {
+		var b strings.Builder
+		xml.EscapeText(&b, []byte(s))
+		return b.String()
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>%s</string>
+	<key>ProgramArguments</key>
+	<array><string>%s</string><string>serve</string><string>-http</string><string>%s</string></array>
+	<key>EnvironmentVariables</key>
+	<dict><key>PATH</key><string>%s</string><key>HOME</key><string>%s</string></dict>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><true/>
+	<key>StandardOutPath</key><string>%s</string>
+	<key>StandardErrorPath</key><string>%s</string>
+</dict>
+</plist>
+`, serviceLabel, esc(binary), esc(addr), esc(path), esc(home), esc(logFile), esc(logFile))
+}
+
+func healthy(addr string) bool {
+	c := http.Client{Timeout: 2 * time.Second}
+	resp, err := c.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
+// runService installs, removes or checks the background gateway.
+func runService(args []string) {
+	fs := flag.NewFlagSet("service", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:8765", "address to serve on (loopback only)")
+	show := fs.Bool("print", false, "with install: print the launchd job instead of installing it")
+	if len(args) == 0 {
+		log.Fatal("usage: gateway service install | uninstall | status [-addr 127.0.0.1:8765]")
+	}
+	fs.Parse(args[1:])
+	home, _ := os.UserHomeDir()
+	plist := filepath.Join(home, "Library", "LaunchAgents", serviceLabel+".plist")
+	domain := fmt.Sprintf("gui/%d", os.Getuid())
+	launchctl := func(a ...string) error { return exec.Command("/bin/launchctl", a...).Run() }
+	switch args[0] {
+	case "status":
+		if healthy(*addr) {
+			fmt.Printf("the gateway is running on http://%s\n", *addr)
+			return
+		}
+		fmt.Printf("nothing is answering on http://%s\n", *addr)
+		os.Exit(1)
+	case "install":
+		binary, err := os.Executable()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if real, err := filepath.EvalSymlinks(binary); err == nil {
+			binary = real
+		}
+		logFile := filepath.Join(defaultState(), "gateway.log")
+		job := servicePlist(binary, *addr, os.Getenv("PATH"), home, logFile)
+		if *show {
+			fmt.Print(job)
+			return
+		}
+		if runtime.GOOS != "darwin" {
+			log.Fatal("service install is for macOS (launchd); elsewhere run: gateway serve -http " + *addr)
+		}
+		if err := os.MkdirAll(filepath.Dir(plist), 0o755); err != nil {
+			log.Fatal(err)
+		}
+		os.MkdirAll(defaultState(), 0o700)
+		if err := os.WriteFile(plist, []byte(job), 0o644); err != nil {
+			log.Fatal(err)
+		}
+		launchctl("bootout", domain+"/"+serviceLabel) // replace a running copy; fails harmlessly when there is none
+		if err := launchctl("bootstrap", domain, plist); err != nil {
+			log.Fatalf("launchctl could not start the job (%v); the job file is %s", err, plist)
+		}
+		for i := 0; i < 20 && !healthy(*addr); i++ {
+			time.Sleep(250 * time.Millisecond)
+		}
+		if !healthy(*addr) {
+			log.Fatalf("the job was installed but nothing answers on http://%s; see %s", *addr, logFile)
+		}
+		fmt.Printf("the gateway is running on http://%s and will start at login\n  log:  %s\n  job:  %s\n", *addr, logFile, plist)
+		fmt.Printf("After installing or signing in to another agent's CLI, or rebuilding the gateway, run this again.\n")
+	case "uninstall":
+		launchctl("bootout", domain+"/"+serviceLabel)
+		os.Remove(plist)
+		fmt.Println("the background gateway is stopped and removed")
+	default:
+		log.Fatal("usage: gateway service install | uninstall | status [-addr 127.0.0.1:8765]")
+	}
 }
 
 func readKeys(path string) map[string]string {

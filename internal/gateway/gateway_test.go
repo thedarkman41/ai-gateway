@@ -820,3 +820,94 @@ func TestBuildHoistsPythonImports(t *testing.T) {
 		t.Errorf("non-Python parts were changed: %q %q", imports, rest)
 	}
 }
+
+// The OpenAI-compatible endpoint, called the way Bill's delegate_code calls its coder: a streamed
+// chat completion for model "coder", with the context and the task as two user messages.
+func TestOpenAIEndpoint(t *testing.T) {
+	t.Setenv("AI_GATEWAY_VOTE", "text")
+	g := build(t, agents(agent("a", 9, 0, "def f(n):\n    return n + 1"), agent("b", 8, 0, "def f(n):\n    # the same\n    return n + 1"),
+		agent("c", 7, 0, "def f(n):\n    return 1 + n")))
+	srv := httptest.NewServer(g.OpenAIHandler())
+	defer srv.Close()
+	post := func(body string) (int, string) {
+		resp, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	// Streamed, as Bill sends it. The reply is the majority's code in one content delta, then a stop and [DONE].
+	code, body := post(`{"model":"coder","stream":true,"temperature":0,"max_tokens":8192,"stream_options":{"include_usage":true},
+		"messages":[{"role":"system","content":"You are an expert software engineer."},
+		            {"role":"user","content":"CONTEXT:\nnothing yet"},{"role":"user","content":"TASK:\nwrite f"}]}`)
+	if code != 200 {
+		t.Fatalf("status %d: %s", code, body)
+	}
+	var content, finish string
+	done := false
+	for _, line := range strings.Split(body, "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		if payload == "[DONE]" {
+			done = true
+			continue
+		}
+		var c struct {
+			Choices []struct {
+				Delta        struct{ Content string }
+				FinishReason string `json:"finish_reason"`
+			}
+		}
+		if err := json.Unmarshal([]byte(payload), &c); err != nil {
+			t.Fatalf("bad chunk %q", payload)
+		}
+		content += c.Choices[0].Delta.Content
+		finish += c.Choices[0].FinishReason
+	}
+	want := "[ai-gateway vote: majority, 2 of 3 agree (a, b); compared as text]\n\n```python\ndef f(n):\n    return n + 1\n```\n"
+	if !done || finish != "stop" || content != want {
+		t.Errorf("done=%v finish=%q content=%q", done, finish, content)
+	}
+
+	// Not streamed; a provider named instead of a vote; an unknown model; the model list.
+	if code, body := post(`{"model":"vote","messages":[{"role":"user","content":[{"type":"text","text":"write f"}]}]}`); code != 200 || !strings.Contains(body, `"finish_reason":"stop"`) || !strings.Contains(body, "majority, 2 of 3 agree") {
+		t.Errorf("non-stream: %d %s", code, body)
+	}
+	if code, body := post(`{"model":"c","messages":[{"role":"user","content":"hi"}]}`); code != 200 || !strings.Contains(body, "return 1 + n") {
+		t.Errorf("named provider: %d %s", code, body)
+	}
+	if code, body := post(`{"model":"nope","messages":[{"role":"user","content":"hi"}]}`); code != 404 || !strings.Contains(body, "unknown provider") {
+		t.Errorf("unknown model: %d %s", code, body)
+	}
+	if code, _ := post(`{"model":"coder","messages":[]}`); code != 400 {
+		t.Errorf("empty messages: %d", code)
+	}
+	resp, _ := http.Get(srv.URL + "/v1/models")
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), `"id":"coder"`) || !strings.Contains(string(b), `"id":"c"`) {
+		t.Errorf("models: %s", b)
+	}
+}
+
+// A vote with a deadline is decided among the agents that answered in time; the slow one is
+// named, and is not marked as failing.
+func TestVoteDeadline(t *testing.T) {
+	t.Setenv("AI_GATEWAY_VOTE", "text")
+	g := build(t, agents(agent("slow", 9, 5, "x = 0"), agent("a", 8, 0, "x = 1"), agent("b", 7, 0, "x = 1"), agent("c", 6, 0, "x = 1")))
+	start := time.Now()
+	v, err := g.Consensus(context.Background(), Request{Prompt: "write x", Agents: 4, Within: time.Second})
+	if err != nil || !v.Majority || v.Answers != 3 || time.Since(start) > 4*time.Second {
+		t.Fatalf("verdict %+v, %v, after %s", v, err, time.Since(start))
+	}
+	if len(v.Failed) != 1 || v.Failed[0] != "slow: had not answered after 1s" {
+		t.Errorf("failed: %v", v.Failed)
+	}
+	if len(g.Free()) != 4 {
+		t.Errorf("the slow agent was rested for being slow: free %v", g.Free())
+	}
+}

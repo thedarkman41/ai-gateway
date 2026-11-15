@@ -147,6 +147,35 @@ A reply that is nothing but one fenced code block (` ```python ... ``` `) comes 
 provider answers a "reply with only the code" task the same way. A reply with prose around its code, or several
 blocks, keeps its fences. A reply that stops inside a code block, or that the provider marks as cut at its output limit, counts as a failure and is retried on the next model or provider.
 
+## Running as a service, and the OpenAI-compatible endpoint
+
+```bash
+ai-gateway service install     # start in the background now and at every login (macOS launchd)
+ai-gateway service status
+ai-gateway service uninstall
+```
+
+The service listens on `127.0.0.1:8765` only and refuses requests that do not come from this machine. It serves:
+
+| Path | What |
+|---|---|
+| `/mcp` | The MCP tools, over HTTP |
+| `/v1/chat/completions` | An OpenAI-compatible endpoint, streamed or not |
+| `/v1/models` | The model names that endpoint takes |
+| `/healthz` | `ok` while it is up |
+
+On the chat endpoint the model name chooses what happens: `coder` (also `consensus`, `vote`) runs the five-agent
+vote and replies with the winning code; `auto`, a provider id or `provider/model` gives one answer through the usual
+routing. A vote waits at most 150 seconds for its agents and is decided among those that have answered.
+
+The job records the `PATH` of the shell that installed it, because that is where the agents' CLIs are found. Run
+`service install` again after installing another CLI or rebuilding the gateway.
+
+**Bill the Cat's `delegate_code`** posts its coding task to an OpenAI-compatible "coder". Pointing it at the service
+turns every hand-off into a vote: set `BILLCAT_CODER_URL=http://127.0.0.1:8765` and `BILLCAT_CODER_TIMEOUT=180` in
+Bill's environment. Note what that changes: the task and the text of the files Bill has read then go to outside
+services instead of staying on your network.
+
 ## Free API keys
 
 Some providers give a free tier through an API key. The gateway skips them until their key is set.

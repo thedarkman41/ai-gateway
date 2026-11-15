@@ -77,9 +77,10 @@ func (v Verdict) How() string {
 type Request struct {
 	Prompt  string
 	System  string
-	Agents  int     // how many vote (default 5)
-	Context string  // code the function relies on: imports and helpers, run before each candidate
-	Tests   [][]any // test calls to compare the candidates on; empty = ask a model for some
+	Agents  int           // how many vote (default 5)
+	Context string        // code the function relies on: imports and helpers, run before each candidate
+	Tests   [][]any       // test calls to compare the candidates on; empty = ask a model for some
+	Within  time.Duration // stop waiting for agents after this long and decide among those that answered; 0 = wait for all
 }
 
 // Consensus asks the strongest free agents for the same function. Each seat moves on to the next
@@ -126,25 +127,35 @@ func (g *Gateway) Consensus(ctx context.Context, r Request) (Verdict, error) {
 		inputs <- nil
 	}
 
+	askCtx := ctx // the agents' deadline; comparing their answers afterwards still runs under ctx
+	if r.Within > 0 {
+		var cancel context.CancelFunc
+		askCtx, cancel = context.WithTimeout(ctx, r.Within)
+		defer cancel()
+	}
 	var wg sync.WaitGroup
 	for seat := 0; seat < min(n, len(pool)); seat++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for try := 0; try <= slotRetries && ctx.Err() == nil; try++ {
+			for try := 0; try <= slotRetries && askCtx.Err() == nil; try++ {
 				id := take()
 				if id == "" {
 					return
 				}
 				start := time.Now()
-				ans, err := g.Ask(ctx, id, system, prompt+codeOnlySuffix, "")
+				ans, err := g.Ask(askCtx, id, system, prompt+codeOnlySuffix, "")
 				mu.Lock()
 				if err == nil {
 					votes = append(votes, Vote{Provider: id, Used: ans.Used, Text: codeOnly(ans.Text), Seconds: time.Since(start).Seconds()})
 					mu.Unlock()
 					return
 				}
-				v.Failed = append(v.Failed, id+": "+provider.Short(firstLine(err.Error())))
+				why := provider.Short(firstLine(err.Error()))
+				if askCtx.Err() != nil && ctx.Err() == nil {
+					why = fmt.Sprintf("had not answered after %s", r.Within)
+				}
+				v.Failed = append(v.Failed, id+": "+why)
 				mu.Unlock()
 			}
 		}()

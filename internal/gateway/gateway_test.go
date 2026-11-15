@@ -993,3 +993,13 @@ func TestPrivacy(t *testing.T) {
 		t.Errorf("broken rules: %v", err)
 	}
 }
+
+// Bill's health check (LoadoutHealth.check) accepts only HTTP 200 with a JSON body where "ok" is true.
+func TestHealthMatchesBillsCheck(t *testing.T) {
+	rec := httptest.NewRecorder()
+	HealthHandler().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	var body map[string]any
+	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body["ok"] != true {
+		t.Errorf("status %d body %q", rec.Code, rec.Body.String())
+	}
+}

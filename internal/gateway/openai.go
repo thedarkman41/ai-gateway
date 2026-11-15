@@ -134,6 +134,14 @@ func (g *Gateway) OpenAIHandler() http.Handler {
 	return mux
 }
 
+// HealthHandler answers /healthz the way Bill the Cat's check reads it: HTTP 200 with a JSON body
+// whose "ok" is true. Bill treats any other body as "not ready" and will not hand off.
+func HealthHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "serving", "service": "ai-gateway"})
+	})
+}
+
 // voteReply is a vote's outcome as a coder's answer: one line saying how it was chosen, then the
 // code in a fence. With no majority the reply is still one piece of code, the largest group's, and
 // says so: the caller builds and tests it either way.

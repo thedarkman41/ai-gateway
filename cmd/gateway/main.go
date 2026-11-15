@@ -82,7 +82,7 @@ func main() {
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", srv.HTTPHandler())
 		mux.Handle("/v1/", mcp.LocalOnly(g.OpenAIHandler()))
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintln(w, "ok") })
+		mux.Handle("/healthz", gateway.HealthHandler())
 		hs := &http.Server{Addr: *addr, Handler: mux}
 		go func() { <-ctx.Done(); hs.Close() }()
 		log.Printf("serving on http://%s: MCP at /mcp, OpenAI-compatible chat at /v1/chat/completions, health at /healthz", *addr)

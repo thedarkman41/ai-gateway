@@ -137,6 +137,13 @@ ai-gateway build -header "import re" "Write a Python function slugify(s)." "Writ
 ai-gateway build -fail task2 "..." "..."      # also sends task2 through rework, as if it had failed to compile
 ```
 
+For a full end-to-end run, [`examples/textkit_test.py`](examples/textkit_test.py) builds a 36-function Python
+library through the queue over HTTP, checks all 91 expected results, and sends whatever fails back through the vote:
+
+```bash
+python3 examples/textkit_test.py        # needs the service running; writes ./textkit_build.py
+```
+
 A build is saved under `~/.ai-gateway/jobs/` as it goes, so the finished parts survive Bill stopping an idle gateway
 (after five minutes without a call). Parts not yet written at that moment are reported as missing and can be
 reworked; running the gateway as an HTTP service (`serve -http`) avoids that.

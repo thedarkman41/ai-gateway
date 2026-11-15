@@ -1010,6 +1010,18 @@ func TestHealthMatchesBillsCheck(t *testing.T) {
 	if code, ct, body := get(build(t, agents(agent("a", 9, 0, "x = 1")))); code != 200 || ct != "application/json" || body["ok"] != true {
 		t.Errorf("serving: %d %s %v", code, ct, body)
 	}
+	// A local-only probe gets the scope header back; an ordinary one does not.
+	for scope, want := range map[string]string{"local": "local", "LOCAL": "local", "": ""} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/healthz", nil)
+		if scope != "" {
+			req.Header.Set(scopeHeader, scope)
+		}
+		build(t, agents(agent("a", 9, 0, "x = 1"))).HealthHandler().ServeHTTP(rec, req)
+		if got := rec.Header().Get(scopeHeader); got != want || rec.Code != 200 {
+			t.Errorf("healthz with scope %q: echo %q, status %d", scope, got, rec.Code)
+		}
+	}
 	down := build(t, `{"providers":[{"id":"gone","tier":"B","kind":"cli","bin":"no-such-binary-xyz","ask_args":["{prompt}"]}]}`)
 	if code, ct, body := get(down); code != 503 || ct != "application/json" || body["ok"] != false || body["state"] == "" {
 		t.Errorf("no agent: %d %s %v", code, ct, body)
@@ -1132,9 +1144,19 @@ func TestContractStatusLine(t *testing.T) {
 	if !strings.Contains(line, "majority, 3 of 5 agree") || !strings.HasSuffix(line, "…]") || body != "```python\ndef f():\n    return 1\n```\n" {
 		t.Errorf("majority: %q / %q", line, body)
 	}
+	if !strings.HasPrefix(line, statusMajority+", 3 of 5 agree") {
+		t.Errorf("a majority must open with %q: %q", statusMajority, line)
+	}
+	// One answer, or every answer the same, is returned as the winner: the majority opening and
+	// the code in one fence, never as "candidate 1". (A local-only request with one local model.)
+	line, body = check(voteReply(Verdict{Answers: 1, Method: "compared as text", Private: "the caller asked for local models only",
+		Groups: []Group{{Text: "x = 1", By: []string{"home"}}}}))
+	if !strings.HasPrefix(line, statusMajority+", 1 of 1 agree (home)") || body != "```\nx = 1\n```\n" || strings.Contains(body, "candidate") {
+		t.Errorf("a single answer: %q / %q", line, body)
+	}
 	line, body = check(voteReply(Verdict{Answers: 2, Method: "compared as text", Private: "x.py is in a blocked directory [/srv]\nsecond line",
 		Diffs: []string{"f(1): candidate 1 gives 1, candidate 2 gives 2"}, Groups: []Group{{Text: "x = 1", By: []string{"a"}}, {Text: "x = 2", By: []string{"b"}}}}))
-	if !strings.Contains(line, "no majority among 2 answers") || !strings.Contains(line, "Privacy: kept on this machine") || strings.Count(body, "### candidate") != 2 || !strings.Contains(body, "x = 2") || !strings.Contains(body, "Where they differ") {
+	if !strings.HasPrefix(line, statusNoMajority+" among 2 answers") || !strings.Contains(line, "Privacy: kept on this machine") || strings.Count(body, "### candidate") != 2 || !strings.Contains(body, "x = 2") || !strings.Contains(body, "Where they differ") {
 		t.Errorf("no majority: %q / %q", line, body)
 	}
 }

@@ -214,10 +214,14 @@ endpoint and its `delegate_build` drives the build endpoints. Change them only t
 - **Local-only scope.** A request with `X-AI-Gateway-Scope: local` is shown to local models only, helper calls
   included, whatever its content. Every response to it carries the header back; with no local model free it is
   refused with `403 no_local_provider` before anything is sent. A build keeps the scope it was created with. Any other
-  value is `400 bad_scope`.
+  value is `400 bad_scope`. `/healthz` echoes the header too, so Bill can check that the scope is honoured before it
+  sends anything private.
 - **Status line.** A vote's reply is one line starting `[ai-gateway ` and ending `]` (at most 300 characters, never
-  inside a code fence), one empty line, then the body. With a majority the body is its code in one fence; without
-  one it is every candidate, each in its own fence under a `### candidate N, from …` heading.
+  inside a code fence), one empty line, then the body. It opens in exactly one of two ways:
+  `[ai-gateway vote: majority, N of M agree (…)`, with the winning code in one fence, or
+  `[ai-gateway vote: no majority among M answers`, with every candidate in its own fence under a
+  `### candidate N, from …` heading. When every agent that answered gave the same thing it is the first form, however
+  few answered: a local-only request with one local model reads `majority, 1 of 1 agree`.
 - **Streaming.** The response headers go out before the vote starts. Until the first data event a comment line
   `: keep-alive` is sent every 10 seconds. Then one content delta, a chunk with `finish_reason: "stop"`, and
   `data: [DONE]`. A failure after the headers is `data: {"error": {"code", "message"}}` then `[DONE]`, with code

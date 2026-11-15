@@ -97,7 +97,12 @@ func (g *Gateway) OpenAIHandler() http.Handler {
 // healthy only on HTTP 200 with a JSON body whose "ok" is true. When no agent can take work it
 // answers 503 with "ok": false and a short "state", which Bill shows as the reason.
 func (g *Gateway) HealthHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A local-only probe gets the scope header back like any other scoped request: Bill checks
+		// here, before sending anything private, that this gateway honours the scope at all.
+		if strings.EqualFold(strings.TrimSpace(r.Header.Get(scopeHeader)), "local") {
+			w.Header().Set(scopeHeader, "local")
+		}
 		if len(g.Free()) == 0 {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "state": "no agent is free: all are resting, out of quota or not installed"})
 			return
@@ -273,8 +278,20 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// The two ways a vote's status line can open. Bill tells the cases apart by these exact prefixes.
+const (
+	statusMajority   = "[ai-gateway vote: majority"
+	statusNoMajority = "[ai-gateway vote: no majority"
+)
+
 // voteReply is a vote's outcome as a coder's answer: the status line, one empty line, the body.
-// With a majority the body is its code in one fence. Without one the status line says so and the
+//
+// When there is one answer to use, the line opens with statusMajority and the body is that code in
+// one fence. That is a true majority, and also the case where every agent that answered gave the
+// same thing, however few answered: a local-only request with one local model is "1 of 1". The
+// counts in the line say which.
+//
+// When the answers differ and none has a majority, the line opens with statusNoMajority and the
 // body carries every candidate.
 func voteReply(v Verdict) string {
 	lang := ""
@@ -282,8 +299,8 @@ func voteReply(v Verdict) string {
 		lang = "python"
 	}
 	var status, body string
-	if v.Majority {
-		status = v.How() + "; " + v.Method
+	if v.Majority || len(v.Groups) == 1 {
+		status = fmt.Sprintf("majority, %d of %d agree (%s); %s", len(v.Groups[0].By), v.Answers, strings.Join(v.Groups[0].By, ", "), v.Method)
 		body = fmt.Sprintf("```%s\n%s\n```\n", lang, v.Winner())
 	} else {
 		status = fmt.Sprintf("no majority among %d answers (%s); the %d candidates follow, strongest group first", v.Answers, v.Method, len(v.Groups))

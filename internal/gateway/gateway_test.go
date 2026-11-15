@@ -994,12 +994,23 @@ func TestPrivacy(t *testing.T) {
 	}
 }
 
-// Bill's health check (LoadoutHealth.check) accepts only HTTP 200 with a JSON body where "ok" is true.
+// Bill's health check (LoadoutHealth.check) is healthy only on HTTP 200 with a JSON body whose "ok" is
+// true; with no agent able to answer the gateway says so with 503, "ok": false and a reason.
 func TestHealthMatchesBillsCheck(t *testing.T) {
-	rec := httptest.NewRecorder()
-	HealthHandler().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
-	var body map[string]any
-	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body["ok"] != true {
-		t.Errorf("status %d body %q", rec.Code, rec.Body.String())
+	get := func(g *Gateway) (int, string, map[string]any) {
+		rec := httptest.NewRecorder()
+		g.HealthHandler().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("body is not JSON: %q", rec.Body.String())
+		}
+		return rec.Code, rec.Header().Get("Content-Type"), body
+	}
+	if code, ct, body := get(build(t, agents(agent("a", 9, 0, "x = 1")))); code != 200 || ct != "application/json" || body["ok"] != true {
+		t.Errorf("serving: %d %s %v", code, ct, body)
+	}
+	down := build(t, `{"providers":[{"id":"gone","tier":"B","kind":"cli","bin":"no-such-binary-xyz","ask_args":["{prompt}"]}]}`)
+	if code, ct, body := get(down); code != 503 || ct != "application/json" || body["ok"] != false || body["state"] == "" {
+		t.Errorf("no agent: %d %s %v", code, ct, body)
 	}
 }

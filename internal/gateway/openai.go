@@ -134,11 +134,16 @@ func (g *Gateway) OpenAIHandler() http.Handler {
 	return mux
 }
 
-// HealthHandler answers /healthz the way Bill the Cat's check reads it: HTTP 200 with a JSON body
-// whose "ok" is true. Bill treats any other body as "not ready" and will not hand off.
-func HealthHandler() http.Handler {
+// HealthHandler answers /healthz the way Bill the Cat's check reads it (LoadoutHealth.check):
+// healthy only on HTTP 200 with a JSON body whose "ok" is true. When no agent can take work it
+// answers 503 with "ok": false and a short "state", which Bill shows as the reason.
+func (g *Gateway) HealthHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "serving", "service": "ai-gateway"})
+		if len(g.Free()) == 0 {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "state": "no agent is free: all are resting, out of quota or not installed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 }
 

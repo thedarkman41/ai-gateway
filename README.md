@@ -193,7 +193,7 @@ The service listens on `127.0.0.1:8765` only and refuses requests that do not co
 | `/mcp` | The MCP tools, over HTTP |
 | `/v1/chat/completions` | An OpenAI-compatible endpoint, streamed or not |
 | `/v1/models` | The model names that endpoint takes |
-| `/healthz` | `{"ok": true}` while it is up, the form Bill's health check requires |
+| `/healthz` | `200 {"ok": true}` while it can serve; `503 {"ok": false, "state": "…"}` when no agent can answer. The form Bill's health check requires |
 
 On the chat endpoint the model name chooses what happens: `coder` (also `consensus`, `vote`) runs the five-agent
 vote and replies with the winning code; `auto`, a provider id or `provider/model` gives one answer through the usual

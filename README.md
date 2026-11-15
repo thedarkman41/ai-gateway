@@ -25,6 +25,7 @@ not written yet.
 | Provider | Tier | Route | On betelgeuse |
 |---|---|---|---|
 | gemini-cli | S | `gemini -p`, signed in with Google | answered earlier on a free API key; now set to use the signed-in account (Google AI Pro), not yet re-run |
+| antigravity | S | `agy -p`, signed in with Google | installed and signed in on Google AI Pro; entry added, not yet called |
 | pollinations | A | OpenAI-compatible endpoint | answered |
 | llm7 | A | OpenAI-compatible endpoint | answered; only its keyless chat models are used |
 | opencode | B | `opencode run -m` | free allowance spent each time it was checked |
@@ -39,7 +40,7 @@ not written yet.
 | groq | K | free API key | answered |
 | cloudflare | K | free API token and account id | answered |
 | cohere, zai | K | free API key | answered |
-| gemini-api | K | free API key | model names updated after the old one was refused as retired; not yet re-run |
+| gemini-api | K | free API key | answered, on Gemini 4 Hydrogen |
 | openrouter | K | free API key | the key stored on betelgeuse was another provider's; not yet called with its own |
 | nvidia | K | free API key | answered |
 | sambanova | K | free API key | disabled: every model answered that a payment method is required |

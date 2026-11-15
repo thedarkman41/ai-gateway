@@ -24,7 +24,7 @@ not written yet.
 
 | Provider | Tier | Route | On betelgeuse |
 |---|---|---|---|
-| gemini-cli | S | `gemini -p -m`, signed in with Google | disabled: since the CLI updated to 0.68, headless runs hang until killed; Antigravity covers the same models |
+| gemini-cli | S | `gemini -p -m`, signed in with Google | answers on `gemini-flash-lite-latest` only; other models hung until killed |
 | antigravity-opus, antigravity-sonnet, antigravity-argon | S | `agy -p --model`, signed in with Google | answered, in votes and in a build |
 | antigravity-hydrogen | S | same | not yet called |
 | pollinations | A | OpenAI-compatible endpoint | answered |

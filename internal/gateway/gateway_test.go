@@ -673,6 +673,11 @@ func TestConsensus(t *testing.T) {
 // task that fails goes back for another agent, and the parts come back as one program in task order.
 // Parts the planner rejects are rewritten by majority vote.
 func TestBuildQueueAndRework(t *testing.T) {
+	// This test is about the queue and the rework plumbing, with stand-in agents whose "functions"
+	// have different names. Compare their answers as text on every platform: where a sandbox exists
+	// (macOS) the vote would otherwise run them, and which stand-in wins then depends on which one
+	// happened to write the part first.
+	t.Setenv("AI_GATEWAY_VOTE", "text")
 	g := build(t, agents(
 		agent("fast", 9, 0.05, "def fast_part(): pass"),
 		agent("slow", 8, 1.2, "def slow_part(): pass"),

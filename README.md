@@ -36,7 +36,7 @@ not written yet.
 | codex-cli | B | `codex exec` | answered |
 | cursor-agent | B | `cursor-agent -p --trust` | answered |
 | amp | B | `amp -x` | disabled: execute mode uses paid credits only |
-| rigel-coder | L | Loadout endpoint on rigel | answered |
+| rigel-coder | L | Loadout endpoint on rigel, profile `coder-16k` (16K context) | answered |
 | kilo, ovh | A | keyless endpoints | both answered |
 | groq | K | free API key | answered |
 | cloudflare | K | free API token and account id | answered |

@@ -1377,3 +1377,37 @@ func TestBuildHoistsRustUses(t *testing.T) {
 		t.Errorf("program:\n%s", v.Program)
 	}
 }
+
+// A provider that says when its allowance comes back is rested until then, not until midnight.
+// (Antigravity on betelgeuse: a weekly allowance, "Resets in 113h53m34s".)
+func TestQuotaResetTime(t *testing.T) {
+	now := time.Date(2026, 11, 21, 13, 0, 0, 0, time.Local)
+	agy := `exit status 3: error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 113h53m34s. AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429)"}`
+	for msg, want := range map[string]time.Time{
+		agy:                                now.Add(113*time.Hour + 53*time.Minute + 34*time.Second + time.Minute),
+		"quota exceeded, resets in 2d 3h":  now.Add(51*time.Hour + time.Minute),
+		"Rate limit reached. Reset in 45m": now.Add(46 * time.Minute),
+		"You have exhausted your daily quota on this model.": time.Date(2026, 11, 22, 0, 0, 0, 0, time.Local),
+		"quota reached. Resets in a while":                   time.Date(2026, 11, 22, 0, 0, 0, 0, time.Local),
+		"quota reached. Resets in 9000h":                     time.Date(2026, 11, 22, 0, 0, 0, 0, time.Local), // not believable
+	} {
+		if got := quotaReset(msg, now); !got.Equal(want) {
+			t.Errorf("quotaReset(%q) = %s, want %s", msg, got.Format(time.RFC3339), want.Format(time.RFC3339))
+		}
+	}
+
+	// End to end: the provider stays out past midnight, and comes back when it said it would.
+	g := build(t, agents(`{"id":"agy","tier":"S","kind":"cli","bin":"sh","preamble":"","models":["m1","m2"],"model_args":["{model}"],
+		"ask_args":["-c","echo 'error: Individual quota reached. Resets in 113h53m34s.' >&2; exit 3","{prompt}"]}`))
+	clock := now
+	g.now = func() time.Time { return clock }
+	g.Ask(context.Background(), "agy", "", "hi", "")
+	clock = now.Add(48 * time.Hour)
+	if len(g.Free()) != 0 || !strings.Contains(g.Status(context.Background()), "resting until Nov 26") {
+		t.Errorf("two days later it should still be resting:\n%s", g.Status(context.Background()))
+	}
+	clock = now.Add(114 * time.Hour)
+	if len(g.Free()) != 1 {
+		t.Error("it should be back once its stated reset time has passed")
+	}
+}

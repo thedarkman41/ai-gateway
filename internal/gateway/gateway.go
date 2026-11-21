@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -230,9 +231,10 @@ func (g *Gateway) Ask(ctx context.Context, model, system, prompt, session string
 				g.ledger.Rest(id, g.now().Add(keyedModelRest), "asks for payment ("+provider.Short(err.Error())+")", g.now())
 				rested = true
 			case quota:
-				g.ledger.BlockModel(id, m, nextMidnight(g.now()), "free allowance used up", g.now())
+				until := quotaReset(err.Error(), g.now())
+				g.ledger.BlockModel(id, m, until, "free allowance used up", g.now())
 				if quotaHits++; quotaHits >= 2 { // the allowance is the account's, not the model's
-					g.ledger.Rest(id, nextMidnight(g.now()), "free allowance used up ("+provider.Short(err.Error())+")", g.now())
+					g.ledger.Rest(id, until, "free allowance used up ("+provider.Short(err.Error())+")", g.now())
 					rested = true
 				}
 			case busy:
@@ -499,6 +501,25 @@ func classify(err error) failure {
 		return slow
 	}
 	return other
+}
+
+var resetsInRe = regexp.MustCompile(`(?i)resets? in\s+((?:\d+\s*d\s*)?(?:\d+\s*h\s*)?(?:\d+\s*m\s*)?(?:\d+(?:\.\d+)?\s*s)?)`)
+
+// quotaReset is when a spent allowance comes back. A provider that says so is believed: Antigravity
+// reports "Resets in 113h53m34s" for a weekly allowance, and asking it again every midnight until
+// then only wastes calls. Otherwise it is assumed to be daily and to reset at local midnight.
+func quotaReset(msg string, now time.Time) time.Time {
+	if m := resetsInRe.FindStringSubmatch(msg); m != nil {
+		var total time.Duration
+		for _, part := range regexp.MustCompile(`(\d+(?:\.\d+)?)\s*([dhms])`).FindAllStringSubmatch(strings.ToLower(m[1]), -1) {
+			n, _ := strconv.ParseFloat(part[1], 64)
+			total += time.Duration(n * float64(map[string]time.Duration{"d": 24 * time.Hour, "h": time.Hour, "m": time.Minute, "s": time.Second}[part[2]]))
+		}
+		if total > 0 && total <= 31*24*time.Hour {
+			return now.Add(total + time.Minute) // a minute's margin, so the first call after is not early
+		}
+	}
+	return nextMidnight(now)
 }
 
 // nextMidnight is when daily free allowances are assumed to reset: local midnight.

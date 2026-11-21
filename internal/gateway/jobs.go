@@ -553,6 +553,14 @@ func (b *buildJob) assembleLocked() string {
 			bodies = rest
 		}
 	}
+	// In Rust the same must happen or the program does not compile: two parts that both say
+	// `use std::collections::HashMap;` are a duplicate-import error.
+	if b.Language == "rust" {
+		if uses, rest := hoistRustUses(b.Header, bodies); len(uses) > 0 {
+			code = append(code, strings.Join(uses, "\n"))
+			bodies = rest
+		}
+	}
 	code = append(code, bodies...)
 	if strings.TrimSpace(b.Footer) != "" {
 		code = append(code, strings.TrimRight(b.Footer, "\n"))
@@ -659,6 +667,35 @@ func hoistImports(header string, parts []string) (imports []string, rest []strin
 		rest = append(rest, strings.Trim(strings.Join(kept, "\n"), "\n"))
 	}
 	return imports, rest
+}
+
+var rustUseRe = regexp.MustCompile(`^use\s+[^;]+;\s*$`)
+
+// hoistRustUses takes the one-line `use` declarations at the left margin out of Rust parts and
+// returns them once each, in first-seen order, leaving out any the header already has. A `use`
+// inside a function or module body is indented and stays where it is; so do `pub use` and a `use`
+// that spans several lines.
+func hoistRustUses(header string, parts []string) (uses []string, rest []string) {
+	norm := func(l string) string { return strings.Join(strings.Fields(l), " ") }
+	seen := map[string]bool{}
+	for _, l := range strings.Split(header, "\n") {
+		seen[norm(l)] = true
+	}
+	for _, p := range parts {
+		var kept []string
+		for _, l := range strings.Split(p, "\n") {
+			if rustUseRe.MatchString(l) {
+				if key := norm(l); !seen[key] {
+					seen[key] = true
+					uses = append(uses, key)
+				}
+				continue
+			}
+			kept = append(kept, l)
+		}
+		rest = append(rest, strings.Trim(strings.Join(kept, "\n"), "\n"))
+	}
+	return uses, rest
 }
 
 func (g *Gateway) find(id string) (*buildJob, error) {

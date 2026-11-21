@@ -1347,3 +1347,33 @@ func TestContractBuilds(t *testing.T) {
 		t.Errorf("bad wait: %d", r.code)
 	}
 }
+
+// Rust parts each bring their own `use` lines; assembled, the program has each once at the top,
+// because a repeated import does not compile.
+func TestBuildHoistsRustUses(t *testing.T) {
+	uses, rest := hoistRustUses("use std::fmt;\nconst N: usize = 4;", []string{
+		"use std::collections::HashMap;\nuse std::fmt;\n\npub fn a() -> HashMap<String, u32> {\n    use std::iter::once;\n    HashMap::new()\n}",
+		"use  std::collections::HashMap;\nuse std::io::{self, Read};\npub use crate::thing;\n\nfn b() {}",
+	})
+	if strings.Join(uses, "|") != "use std::collections::HashMap;|use std::io::{self, Read};" {
+		t.Errorf("uses %q", uses)
+	}
+	if rest[0] != "pub fn a() -> HashMap<String, u32> {\n    use std::iter::once;\n    HashMap::new()\n}" || rest[1] != "pub use crate::thing;\n\nfn b() {}" {
+		t.Errorf("rest %q", rest)
+	}
+
+	// End to end: a Rust build over HTTP puts the shared imports once, under the header.
+	g := build(t, agents(agent("a", 9, 0, "use std::collections::HashMap;\n\npub fn count(s: &str) -> HashMap<char, usize> {\n    HashMap::new()\n}")))
+	srv := httptest.NewServer(g.OpenAIHandler())
+	defer srv.Close()
+	r := call(t, srv, "POST", "/v1/builds", `{"language":"rust","header":"// textkit","tasks":[{"id":"t1","prompt":"p"},{"id":"t2","prompt":"p"}]}`)
+	var made struct {
+		ID string `json:"build_id"`
+	}
+	json.Unmarshal([]byte(r.body), &made)
+	var v BuildView
+	json.Unmarshal([]byte(call(t, srv, "GET", "/v1/builds/"+made.ID+"?wait=20", "").body), &v)
+	if strings.Count(v.Program, "use std::collections::HashMap;") != 1 || !strings.HasPrefix(v.Program, "// textkit\n\nuse std::collections::HashMap;\n\npub fn count") {
+		t.Errorf("program:\n%s", v.Program)
+	}
+}

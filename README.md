@@ -117,7 +117,7 @@ gateway does not run them and compares text instead. `AI_GATEWAY_VOTE=text` turn
 **A program: a greedy queue.** `build` takes one task per function. Every free agent takes a task from the queue,
 strongest first, and takes another the moment it finishes, so faster agents write more of the program. A task that
 fails goes back to the front of the queue for a different agent; an agent that fails twice running leaves. `collect`
-returns the parts as one program, in task order, between the header and footer Bill supplied. For Python, the import lines each agent wrote are gathered once at the top.
+returns the parts as one program, in task order, between the header and footer Bill supplied. For Python and Rust, the import lines each agent wrote (`import`, `use`) are gathered once at the top; in Rust a repeated `use` would not compile.
 
 **Check, then rework.** Bill compiles and tests the program. Each function that fails goes to `rework` with its
 error: it is rewritten by the same five-agent vote, with the error and the rejected code in the prompt, and the
